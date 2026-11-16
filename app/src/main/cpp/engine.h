@@ -7,9 +7,12 @@
 constexpr int kTracks = 8;
 constexpr int kMaxSteps = 64;
 constexpr int kPatterns = 8;
-constexpr int kMasterParams = 12;
+constexpr int kMasterParams = 24;
 enum { TP_LEVEL = 12, TP_PAN = 13, TP_DLY = 14, TP_REV = 15 };
-enum { MP_DTIME = 0, MP_DFB, MP_DTONE, MP_DLEVEL, MP_RSIZE, MP_RDAMP, MP_RLEVEL, MP_DRIVE, MP_VOLUME };
+enum { MP_DTIME = 0, MP_DFB, MP_DTONE, MP_DLEVEL, MP_RSIZE, MP_RDAMP, MP_RLEVEL, MP_DRIVE, MP_VOLUME,
+       MP_CTHR, MP_CRATIO, MP_CATK, MP_CREL, MP_CGAIN, MP_CMIX };
+// performance FX ids
+enum { FX_REP4 = 0, FX_REP8, FX_REP16, FX_REP32, FX_REVERSE, FX_TAPESTOP, FX_GATE, FX_CRUSH, FX_DUB, FX_FREEZE, FX_LOFI, FX_FILTER, FX_COUNT };
 
 // Trig conditions: 0 none, 1 FILL, 2 !FILL, 3 PRE, 4 !PRE, 5 NEI, 6 !NEI, 7 1ST, 8 !1ST, then A:B for B=2..8, A=1..B
 constexpr int kCondFixed = 9;
@@ -119,6 +122,9 @@ public:
     std::atomic<bool> playing{false};
     std::atomic<double> relPos{0.0};
     std::atomic<float> peak{0.f};
+    std::atomic<float> compGR{0.f};      // dB of gain reduction
+    std::atomic<bool> fxOn[16];
+    std::atomic<float> fxX{0.5f}, fxY{0.2f};
 
     // song mode
     static constexpr int kSongRows = 64;
@@ -156,4 +162,12 @@ private:
     float tbufL[256], tbufR[256];
     float busL[256], busR[256], dlyL[256], dlyR[256], revL[256], revR[256];
     Delay delay; Reverb reverb; OnePole dcL, dcR;
+    // performance FX state
+    std::vector<float> pbL, pbR; int pw = 0;
+    int bufMode = -1, genMode = -1; bool prevOn[6] = {false};
+    long long fxT = 0; int fxStart = 0; int repLen = 1; double readPos = 0; float tapeRate = 1.f; float bufMix = 0.f;
+    float mixFilter = 0, mixCrush = 0, mixGate = 0, mixLofi = 0, gateS = 1.f; double gatePh = 0;
+    SVF pfL, pfR; float crL = 0, crR = 0; int crC = 0;
+    std::vector<float> wowL, wowR; int ww = 0; float wowPh = 0, flutPh = 0; OnePole lofiL, lofiR;
+    float compEnv = 0.f;
 };

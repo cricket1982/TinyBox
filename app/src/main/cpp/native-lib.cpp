@@ -111,6 +111,8 @@ JFN(void, setSongMode)(JNIEnv *, jclass, jboolean on, jboolean loop, jint startR
     if (!gEngine) return;
     gEngine->songMode.store(on); gEngine->songLoop.store(loop); gEngine->songStart.store(startRow);
 }
+JFN(void, setFx)(JNIEnv *, jclass, jint id, jboolean on) { if (gEngine && id >= 0 && id < FX_COUNT) gEngine->fxOn[id].store(on); }
+JFN(void, setFxXY)(JNIEnv *, jclass, jfloat x, jfloat y) { if (gEngine) { gEngine->fxX.store(clampf(x, 0.f, 1.f)); gEngine->fxY.store(clampf(y, 0.f, 1.f)); } }
 JFN(void, setMachine)(JNIEnv *, jclass, jint t, jint m) {
     if (!gEngine || t < 0 || t >= kTracks || m < 0 || m >= M_COUNT) return;
     gEngine->freeRetired();
@@ -160,10 +162,10 @@ JFN(void, setSlices)(JNIEnv *env, jclass, jint t, jintArray starts) {
 }
 
 // status: [0]=playing [1]=pattern [2..9]=current step per track [10..17]=trigger counters [18]=peak*1000
-//         [19..26]=track peaks*1000 [27]=song row [28]=song repeat
+//         [19..26]=track peaks*1000 [27]=song row [28]=song repeat [29]=compressor GR (dB*100)
 JFN(void, status)(JNIEnv *env, jclass, jintArray out) {
     if (!gEngine) return;
-    jint s[29];
+    jint s[30];
     s[0] = gEngine->playing.load() ? 1 : 0;
     s[1] = gEngine->curPattern.load();
     for (int t = 0; t < kTracks; ++t) {
@@ -173,6 +175,7 @@ JFN(void, status)(JNIEnv *env, jclass, jintArray out) {
     s[18] = (jint)(gEngine->peak.load() * 1000.f);
     for (int t = 0; t < kTracks; ++t) s[19 + t] = (jint)(gEngine->tracks[t].peak.load() * 1000.f);
     s[27] = gEngine->songRow.load(); s[28] = gEngine->songRepeat.load();
-    env->SetIntArrayRegion(out, 0, 29, s);
+    s[29] = (jint)(gEngine->compGR.load() * 100.f);
+    env->SetIntArrayRegion(out, 0, std::min(30, (int)env->GetArrayLength(out)), s);
 }
 JFN(jdouble, relPos)(JNIEnv *, jclass) { return gEngine ? gEngine->relPos.load() : 0.0; }

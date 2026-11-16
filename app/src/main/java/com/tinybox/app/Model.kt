@@ -8,7 +8,7 @@ const val TRACKS = 8
 const val MAX_STEPS = 64
 const val PATTERNS = 8
 const val TRACK_PARAMS = 16
-const val MASTER_PARAMS = 12
+const val MASTER_PARAMS = 24
 
 enum class Kind { DRUM, SLICER, SYNTH, GRAIN }
 
@@ -58,11 +58,38 @@ object Defs {
         MachineDef("PM String", "STR", Kind.SYNTH,
             listOf("Decay", "Damp", "Pick", "Bright", "Body", "Detune", "Release", "Drive"),
             listOf(.55f, .35f, .3f, .6f, .3f, .2f, .35f, 0f)),
+        MachineDef("Chip Perc", "CHP", Kind.DRUM,
+            listOf("Pitch", "Decay", "Sweep", "SwpTime", "Noise", "Metal", "Bits", "Rate", "Duty"),
+            listOf(.45f, .3f, .3f, .3f, .2f, 0f, .3f, .1f, .5f)),
+        MachineDef("KS Drum", "KSD", Kind.DRUM,
+            listOf("Pitch", "Decay", "Blend", "Bright", "Damp", "Bend", "Drive"),
+            listOf(.35f, .4f, .5f, .7f, .3f, .3f, 0f)),
+        MachineDef("Vox Perc", "VOX", Kind.DRUM,
+            listOf("Vowel", "Decay", "Pitch", "Breath", "Shift", "Sweep", "Q", "Drive"),
+            listOf(.3f, .3f, .4f, .5f, .5f, .5f, .4f, 0f)),
+        MachineDef("West Coast", "WST", Kind.SYNTH,
+            listOf("Ratio", "FM", "Fold", "Symm", "FoldEnv", "Vibrato", "Attack", "Decay", "Sustain", "Release", "LPG Res", "Drive"),
+            listOf(.1f, .3f, .3f, .5f, .4f, 0f, .05f, .45f, .3f, .4f, .2f, 0f)),
+        MachineDef("Phase Dist", "PD", Kind.SYNTH,
+            listOf("Wave", "DCW", "DCW Env", "DCW Dec", "Reso", "Detune", "Attack", "Decay", "Sustain", "Release", "Vibrato", "Drive"),
+            listOf(0f, .3f, .5f, .4f, .3f, .3f, .03f, .5f, .6f, .4f, 0f, 0f)),
+        MachineDef("Formant", "FMT", Kind.SYNTH,
+            listOf("Vowel", "VowelEnv", "Shift", "Q", "Breath", "Detune", "Attack", "Decay", "Sustain", "Release", "Vibrato", "Drive"),
+            listOf(.2f, .65f, .5f, .5f, .1f, .3f, .1f, .5f, .7f, .45f, .2f, 0f)),
     )
+    /** order + group names for the machine picker */
+    val pickerOrder = listOf(0, 1, 2, 3, 4, 5, 14, 15, 16, 6, 7, 8, 13, 9, 11, 10, 12, 17, 18, 19)
+    fun group(m: Int) = when (m) {
+        in 0..5 -> "Classic drum"; 14, 15, 16 -> "Unusual drum"; 6, 7, 8, 13 -> "Physical model"
+        9, 11 -> "Sample"; else -> "Synth"
+    }
     val trackParams = listOf("Level", "Pan", "Delay", "Reverb")
     val trackDefaults = listOf(.75f, .5f, 0f, 0f)
-    val masterParams = listOf("DlyTime", "DlyFdbk", "DlyTone", "DlyLvl", "RevSize", "RevDamp", "RevLvl", "Drive", "Volume")
-    val masterDefaults = listOf(.3f, .4f, .6f, .6f, .6f, .4f, .6f, 0f, .8f)
+    val masterParams = listOf("DlyTime", "DlyFdbk", "DlyTone", "DlyLvl", "RevSize", "RevDamp", "RevLvl", "Drive", "Volume",
+        "CmpThr", "CmpRatio", "CmpAtk", "CmpRel", "CmpGain", "CmpMix")
+    val masterDefaults = listOf(.3f, .4f, .6f, .6f, .6f, .4f, .6f, 0f, .8f, .7f, .45f, .6f, .5f, 0f, 0f)
+    val vowels = listOf("A", "E", "I", "O", "U")
+    fun vowelName(v: Float) = vowels[(v * 4f + .5f).toInt().coerceIn(0, 4)]
 
     val conditions: List<String> = buildList {
         addAll(listOf("—", "FILL", "!FILL", "PRE", "!PRE", "NEI", "!NEI", "1ST", "!1ST"))
@@ -93,11 +120,23 @@ object Defs {
             machine == 11 && i == 4 -> { val st = ((v - .5f) * 48).roundToInt(); if (st > 0) "+$st" else "$st" }
             machine == 11 && i == 8 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Stop" else if (p < 0) "<$p" else ">$p" }
             machine == 12 && i == 0 -> fmRatios[(v * 11.99f).toInt().coerceIn(0, 11)]
+            machine == 17 && i == 0 -> fmRatios[(v * 11.99f).toInt().coerceIn(0, 11)]
+            machine == 18 && i == 0 -> listOf("Saw", "Square", "Reso")[(v * 2.99f).toInt().coerceIn(0, 2)]
+            machine == 14 && i == 5 -> if (v > .5f) "On" else "Off"
+            machine == 14 && i == 2 -> { val o = ((v - .5f) * 8f); String.format("%+.1f", o) }
+            (machine == 16 || machine == 19) && i == 0 -> vowelName(v)
+            (machine == 19 && i == 1) || (machine == 16 && i == 5) -> { val p = ((v - .5f) * 200).roundToInt(); if (p > 0) "+$p" else "$p" }
             else -> (v * 100).roundToInt().toString()
         }
     }
     fun formatMaster(i: Int, v: Float): String = when (i) {
         0 -> delaySteps[(v * 7.99f).toInt().coerceIn(0, 7)]
+        9 -> "${(-40f + v * 40f).roundToInt()}dB"
+        10 -> String.format("%.1f:1", 1.0 * Math.pow(20.0, v.toDouble()))
+        11 -> { val ms = 0.1 * Math.pow(1000.0, v.toDouble()); if (ms < 10) String.format("%.1fms", ms) else "${ms.roundToInt()}ms" }
+        12 -> "${(20.0 * Math.pow(50.0, v.toDouble())).roundToInt()}ms"
+        13 -> "+${(v * 24f).roundToInt()}dB"
+        14 -> if (v <= 0.001f) "Off" else "${(v * 100).roundToInt()}%"
         else -> (v * 100).roundToInt().toString()
     }
 }
@@ -140,6 +179,7 @@ class TrackData {
     var sampleUri: String? = null
     var sampleName: String? = null
     var slices: IntArray = intArrayOf(0)
+    var sliceSens = .6f
     fun setMachineDefaults(m: Int) {
         machine = m
         for (i in 0 until 12) params[i] = Defs.paramDefault(m, i)
@@ -208,6 +248,7 @@ class Project {
             tr.sampleUri?.let { j.put("sampleUri", it) }
             tr.sampleName?.let { j.put("sampleName", it) }
             j.put("slices", JSONArray(tr.slices.toList()))
+            j.put("sliceSens", tr.sliceSens.toDouble())
             ta.put(j)
         }
         o.put("tracks", ta)
@@ -259,6 +300,7 @@ class Project {
                     tr.sampleName = if (j.has("sampleName")) j.getString("sampleName") else null
                     j.optJSONArray("slices")?.let { a -> tr.slices = IntArray(a.length()) { a.getInt(it) } }
                     if (tr.slices.isEmpty()) tr.slices = intArrayOf(0)
+                    tr.sliceSens = j.optDouble("sliceSens", .6).toFloat()
                 }
             }
             o.optJSONArray("patterns")?.let { pa ->

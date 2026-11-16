@@ -26,6 +26,12 @@ To build on GitHub and install on the tablet without a cable, see **GITHUB_SETUP
 | 10 | Poly Synth: 8 voices, 2 polyBLEP osc + sub, resonant filter, ADSR, vibrato, chords | Synth |
 | 11 | Granular: up to 96 grains from a loaded sample; position, size, density, spray, pitch, jitter, stereo spread, reverse, scan, tone | Sample / synth |
 | 12 | FM Poly: 8-voice 2-op FM with feedback, index envelope, ADSR | Synth |
+| 14 | Chip Perc: 8-bit square + LFSR noise with pitch sweep, bit depth and sample-rate reduction | Unusual drum |
+| 15 | KS Drum: Karplus-Strong drum/string blend with pitch bend | Unusual drum |
+| 16 | Vox Perc: formant (vowel) bursts — beatbox-style percussion | Unusual drum |
+| 17 | West Coast: 8-voice FM complex oscillator → wavefolder → low-pass gate | Synth |
+| 18 | Phase Dist: 8-voice Casio CZ-style phase distortion (saw / square / resonant) with DCW envelope | Synth |
+| 19 | Formant: 8-voice vowel synth with vowel envelope | Synth |
 | 13 | PM String: 8-voice Karplus-Strong, two detuned strings per voice, pick position, body resonance | Physical model |
 
 Every track also has **Level, Pan, Delay send and Reverb send**. The master section has a tempo-synced ping-pong delay, a reverb, drive and a soft limiter.
@@ -36,6 +42,19 @@ Every track also has **Level, Pan, Delay send and Reverb send**. The master sect
 - **SONG**: a list of up to 64 rows, each a pattern × number of repeats.
   - ADD and INSERT use the current pattern. Drag a row's letter to change its pattern, or its ×N to change the repeats.
   - Tap a row to start playback from there. Turn on SONG MODE, then press PLAY. LOOP repeats the song; with LOOP off, playback stops at the end. Long-press CLEAR to empty the song.
+
+## FX page (performance effects on the master)
+- **Pads:** REPEAT 1/4, 1/8, 1/16 and 1/32 (beat repeat), REVERSE, TAPE STOP, GATE 1/16, CRUSH, DUB THROW (everything into a high-feedback delay), FREEZE (infinite reverb) and LO-FI (wow, flutter and dull tape).
+- **XY pad:** a DJ filter. Left of centre is low-pass, right is high-pass, and moving up adds resonance.
+- **Using them:** hold a pad to apply it. With LATCH on, a tap toggles the pad instead. ALL OFF releases everything.
+
+## Master compressor
+In the MASTER knobs: CmpThr, CmpRatio, CmpAtk, CmpRel, CmpGain (make-up) and CmpMix. Mix starts at 0, which is off. Raise it to compress, and turn it partway for parallel compression. The gain-reduction meter shows above the knobs.
+
+## Slicer
+- **DETECT:** finds slices from transients. The detector looks at rises in loudness rather than raw loudness, so quiet passages get sliced too. SENS −/+ adjusts the sensitivity and re-detects. Loading a sample runs detection automatically.
+- **EDIT:** tap the waveform to add a slice, drag a marker to move it, and hold a marker to delete it.
+- **ZOOM −/+:** zooms the waveform. When zoomed in with EDIT on, drag an empty part of the waveform to scroll.
 
 ## Chords
 Synth, granular and slicer steps can hold up to 4 notes.

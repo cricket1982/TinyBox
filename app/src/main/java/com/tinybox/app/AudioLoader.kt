@@ -10,6 +10,7 @@ import android.provider.OpenableColumns
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import kotlin.math.abs
+import kotlin.math.log10
 import kotlin.math.max
 import kotlin.math.min
 
@@ -25,6 +26,22 @@ class Decoded(val l: FloatArray, val r: FloatArray, val sampleRate: Int, val nam
             var lo = 0f; var hi = 0f
             var i = s
             val stride = max(1, (e - s) / 64)
+            while (i < e && i < frames) { val v = (l[i] + r[i]) * .5f; if (v < lo) lo = v; if (v > hi) hi = v; i += stride }
+            out[b * 2] = lo; out[b * 2 + 1] = hi
+        }
+        return out
+    }
+    fun peaksRange(start: Int, end: Int, buckets: Int): FloatArray {
+        val out = FloatArray(buckets * 2)
+        val s0 = start.coerceIn(0, frames); val e0 = end.coerceIn(s0, frames)
+        val span = e0 - s0
+        if (span <= 0) return out
+        for (b in 0 until buckets) {
+            val s = s0 + (b.toLong() * span / buckets).toInt()
+            val e = max(s + 1, s0 + ((b + 1).toLong() * span / buckets).toInt())
+            var lo = 0f; var hi = 0f
+            val stride = max(1, (e - s) / 48)
+            var i = s
             while (i < e && i < frames) { val v = (l[i] + r[i]) * .5f; if (v < lo) lo = v; if (v > hi) hi = v; i += stride }
             out[b * 2] = lo; out[b * 2 + 1] = hi
         }
@@ -161,36 +178,79 @@ object AudioLoader {
 
     fun evenSlices(frames: Int, count: Int): IntArray = IntArray(count) { (it.toLong() * frames / count).toInt() }
 
-    /** Energy-based transient detection, returns up to maxSlices start points (always includes 0). */
-    fun transientSlices(d: Decoded, maxSlices: Int): IntArray {
-        val hop = 256
-        val nb = d.frames / hop
+    /**
+     * Transient detection on the rise of log energy (so quiet passages are found as well as
+     * loud ones). sensitivity 0..1: higher = more slices. Always includes 0.
+     */
+    fun transientSlices(d: Decoded, sensitivity: Float, maxSlices: Int = 64): IntArray {
+        val hop = 256; val win = 512
+        val n = d.frames
+        val nb = (n - win) / hop
         if (nb < 4) return intArrayOf(0)
-        val env = FloatArray(nb)
-        var prev = 0f
+        val dbF = FloatArray(nb); val dbH = FloatArray(nb)
         for (b in 0 until nb) {
-            var e = 0f
             val s = b * hop
-            for (i in s until s + hop) { val x = (d.l[i] + d.r[i]) * .5f; val hp = x - prev; prev = x; e += hp * hp + x * x * .2f }
-            env[b] = e
+            var ef = 0.0; var eh = 0.0
+            var prev = if (s > 0) (d.l[s - 1] + d.r[s - 1]) * .5f else 0f
+            for (i in s until s + win) {
+                val x = (d.l[i] + d.r[i]) * .5f
+                val h = x - prev; prev = x
+                ef += (x * x).toDouble(); eh += (h * h).toDouble()
+            }
+            dbF[b] = (10.0 * log10(ef / win + 1e-12)).toFloat()
+            dbH[b] = (10.0 * log10(eh / win + 1e-12)).toFloat()
         }
+        val loudest = dbF.maxOrNull() ?: 0f
+        val floor = loudest - 55f
         val flux = FloatArray(nb)
-        for (b in 1 until nb) flux[b] = max(0f, env[b] - env[b - 1] * 1.3f)
-        val minGap = max(1, (0.06f * d.sampleRate / hop).toInt())
+        for (b in 2 until nb) {
+            if (dbF[b] < floor) continue
+            val rf = dbF[b] - max(dbF[b - 1], dbF[b - 2])
+            val rh = dbH[b] - max(dbH[b - 1], dbH[b - 2])
+            flux[b] = max(0f, rf) * .5f + max(0f, rh)
+        }
+        val delta = 14f - sensitivity.coerceIn(0f, 1f) * 12f   // dB of rise needed above the local median
+        val half = 20
+        val tmp = FloatArray(2 * half + 1)
         val cand = ArrayList<Pair<Int, Float>>()
-        for (b in 1 until nb - 1) {
-            var local = 0f; var cnt = 0
-            for (k in max(0, b - 20) until min(nb, b + 20)) { local += flux[k]; cnt++ }
-            val thr = local / cnt * 1.8f + 1e-6f
-            if (flux[b] > thr && flux[b] >= flux[b - 1] && flux[b] >= flux[b + 1]) cand.add(b to flux[b])
+        for (b in 2 until nb - 1) {
+            if (flux[b] <= 0f || flux[b] < flux[b - 1] || flux[b] < flux[b + 1]) continue
+            var c = 0
+            for (k in max(0, b - half)..min(nb - 1, b + half)) tmp[c++] = flux[k]
+            java.util.Arrays.sort(tmp, 0, c)
+            val med = tmp[c / 2]
+            if (flux[b] > med + delta) cand.add(b to flux[b])
         }
-        cand.sortByDescending { it.second }
-        val picked = ArrayList<Int>(); picked.add(0)
-        for ((b, _) in cand) {
-            if (picked.size >= maxSlices) break
-            if (picked.all { abs(it - b) >= minGap }) picked.add(b)
+        // enforce a minimum gap (keep the stronger onset), then cap the count
+        val minGap = max(1, (0.045f * d.sampleRate / hop).toInt())
+        val byTime = ArrayList<Pair<Int, Float>>()
+        for (c in cand) {
+            if (c.first < minGap) continue
+            val last = byTime.lastOrNull()
+            if (last != null && c.first - last.first < minGap) { if (c.second > last.second) byTime[byTime.size - 1] = c }
+            else byTime.add(c)
         }
-        picked.sort()
-        return IntArray(picked.size) { if (it == 0) 0 else max(0, picked[it] * hop - hop) }
+        val kept = if (byTime.size > maxSlices - 1) byTime.sortedByDescending { it.second }.take(maxSlices - 1).sortedBy { it.first } else byTime
+        val out = ArrayList<Int>(); out.add(0)
+        for ((b, _) in kept) out.add(refineOnset(d, b * hop, win))
+        return out.distinct().sorted().toIntArray()
+    }
+
+    /** move a coarse onset to just before the attack, at a zero crossing */
+    private fun refineOnset(d: Decoded, start: Int, win: Int): Int {
+        val end = min(d.frames - 1, start + win)
+        var pk = 0f
+        for (i in start until end) pk = max(pk, abs(d.l[i] + d.r[i]) * .5f)
+        var at = start
+        for (i in start until end) if (abs(d.l[i] + d.r[i]) * .5f > pk * .25f) { at = i; break }
+        at = max(0, at - 48)
+        var i = at
+        val lim = max(0, at - 192)
+        while (i > lim) {
+            val a = d.l[i] + d.r[i]; val b = d.l[i - 1] + d.r[i - 1]
+            if ((a >= 0f) != (b >= 0f)) return i
+            i--
+        }
+        return at
     }
 }

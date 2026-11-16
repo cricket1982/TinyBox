@@ -17,6 +17,8 @@ Engine::Engine(float sampleRate) : sr(sampleRate) {
     }
     for (float &m : master) m = 0.5f;
     master[MP_DLEVEL] = 0.6f; master[MP_RLEVEL] = 0.6f; master[MP_DRIVE] = 0.f; master[MP_VOLUME] = 0.8f;
+    master[MP_CTHR] = 0.7f; master[MP_CRATIO] = 0.45f; master[MP_CATK] = 0.6f; master[MP_CREL] = 0.5f; master[MP_CGAIN] = 0.f; master[MP_CMIX] = 0.f;
+    for (auto &f : fxOn) f.store(false);
     setSampleRate(sr);
 }
 
@@ -30,6 +32,9 @@ void Engine::setSampleRate(float s) {
     for (auto &tr : tracks) if (tr.mach) tr.mach->sr = sr;
     delay.init(sr); reverb.init(sr);
     dcL.setLP(8.f, sr); dcR.setLP(8.f, sr);
+    pbL.assign((int)(sr * 4.f), 0.f); pbR.assign((int)(sr * 4.f), 0.f); pw = 0;
+    wowL.assign(4096, 0.f); wowR.assign(4096, 0.f); ww = 0;
+    lofiL.setLP(3500.f, sr); lofiR.setLP(3500.f, sr);
 }
 
 void Engine::freeRetired() {
@@ -274,30 +279,152 @@ void Engine::process(float *out, int frames) {
         // master FX
         static const int kDlySteps[8] = {1, 2, 3, 4, 6, 8, 12, 16};
         const float sps = sr * 60.f / (bpm.load() * 4.f);
+        const bool dub = fxOn[FX_DUB].load(std::memory_order_relaxed);
+        const bool freeze = fxOn[FX_FREEZE].load(std::memory_order_relaxed);
         delay.target = std::min((float)delay.bl.size() - 4.f, kDlySteps[std::clamp((int)(master[MP_DTIME] * 7.99f), 0, 7)] * sps);
-        const float dfb = master[MP_DFB] * 0.95f;
+        const float dfb = dub ? std::max(master[MP_DFB] * 0.95f, 0.85f) : master[MP_DFB] * 0.95f;
         delay.tl.setLP(expo(master[MP_DTONE], 400.f, 16000.f), sr); delay.tr.a = delay.tl.a;
-        const float dlev = master[MP_DLEVEL] * 1.2f;
-        const float rfb = 0.7f + master[MP_RSIZE] * 0.28f, rdamp = master[MP_RDAMP] * 0.6f;
+        const float dlev = master[MP_DLEVEL] * 1.2f * (dub ? 1.4f : 1.f);
+        const float rfb = freeze ? 0.9995f : 0.7f + master[MP_RSIZE] * 0.28f;
+        const float rdamp = freeze ? 0.f : master[MP_RDAMP] * 0.6f;
         const float rlev = master[MP_RLEVEL] * 1.5f;
         const float drv = 1.f + master[MP_DRIVE] * 6.f;
         const float vol = master[MP_VOLUME] * master[MP_VOLUME] * 1.25f;
+        // compressor settings
+        const float cThr = -40.f + master[MP_CTHR] * 40.f;
+        const float cRatio = expo(master[MP_CRATIO], 1.f, 20.f), cSlope = 1.f - 1.f / cRatio;
+        const float cAtk = 1.f - std::exp(-1.f / (expo(master[MP_CATK], 0.0001f, 0.1f) * sr));
+        const float cRel = 1.f - std::exp(-1.f / (expo(master[MP_CREL], 0.02f, 1.f) * sr));
+        const float cMake = master[MP_CGAIN] * 24.f, cMix = master[MP_CMIX];
+        float grMax = 0.f;
+        // performance FX: detect newly pressed buffer effects (repeat / reverse / tape stop)
+        static const float kRepSteps[4] = {4.f, 2.f, 1.f, 0.5f};
+        const int pbSize = (int)pbL.size();
+        for (int id = 0; id < 6; ++id) {
+            bool on = fxOn[id].load(std::memory_order_relaxed);
+            if (on && !prevOn[id]) {
+                bufMode = genMode = id; fxT = 0; fxStart = pw; readPos = pw - 1; tapeRate = 1.f;
+                if (id < 4) repLen = std::max(64, (int)(kRepSteps[id] * sps));
+            }
+            prevOn[id] = on;
+        }
+        if (bufMode >= 0 && !fxOn[bufMode].load(std::memory_order_relaxed)) bufMode = -1;
+        const bool fFilter = fxOn[FX_FILTER].load(std::memory_order_relaxed);
+        const bool fCrush = fxOn[FX_CRUSH].load(std::memory_order_relaxed);
+        const bool fGate = fxOn[FX_GATE].load(std::memory_order_relaxed);
+        const bool fLofi = fxOn[FX_LOFI].load(std::memory_order_relaxed);
+        {
+            float x = fxX.load(), y = fxY.load();
+            float q = 0.7f + y * 8.f;
+            float fc = x < 0.5f ? expo(x * 2.f, 60.f, 20000.f) : expo((x - 0.5f) * 2.f, 20.f, 12000.f);
+            pfL.set(fc, q, sr); pfR.set(fc, q, sr);
+        }
+        const bool filterHP = fxX.load() >= 0.5f;
+        const double stepsPerSample = 1.0 / sps;
+        if (playing.load(std::memory_order_relaxed)) gatePh = songPos - n * stepsPerSample;
+        const float ramp = 1.f / 256.f;
         float pk = peak.load(std::memory_order_relaxed) * 0.9f;
         const int dsize = (int)delay.bl.size();
         for (int i = 0; i < n; ++i) {
             delay.len += (delay.target - delay.len) * 0.0005f;
             float dl = delay.read(delay.bl, delay.len), dr = delay.read(delay.br, delay.len);
-            delay.bl[delay.w] = (dlyL[i] + dlyR[i]) * 0.5f + delay.tr.lp(dr) * dfb;
+            float dIn = (dlyL[i] + dlyR[i]) * 0.5f + (dub ? (busL[i] + busR[i]) * 0.35f : 0.f);
+            delay.bl[delay.w] = dIn + delay.tr.lp(dr) * dfb;
             delay.br[delay.w] = delay.tl.lp(dl) * dfb;
             if (++delay.w >= dsize) delay.w = 0;
-            float rl, rr; reverb.tick(revL[i], revR[i], rfb, rdamp, rl, rr);
+            float rl, rr;
+            reverb.tick(freeze ? 0.f : revL[i], freeze ? 0.f : revR[i], rfb, rdamp, rl, rr);
             float L = busL[i] + dl * dlev + rl * rlev;
             float R = busR[i] + dr * dlev + rr * rlev;
             L = dcL.hp(L); R = dcR.hp(R);
+
+            // ---- buffer effects
+            pbL[pw] = L; pbR[pw] = R;
+            float target = bufMode >= 0 ? 1.f : 0.f;
+            bufMix += clampf(target - bufMix, -ramp, ramp);
+            if (genMode >= 0 && bufMix > 0.f) {
+                float bl = L, br = R;
+                if (genMode < 4) {
+                    if (fxT >= repLen) {
+                        int ph = (int)(fxT % repLen);
+                        int idx = (fxStart + ph) % pbSize;
+                        float w = std::min(1.f, std::min(ph / 64.f, (repLen - ph) / 64.f));
+                        bl = pbL[idx] * w; br = pbR[idx] * w;
+                    }
+                } else if (genMode == FX_REVERSE) {
+                    long long back = std::min<long long>(fxT, pbSize - 2);
+                    int idx = (int)(((long long)fxStart - back) % pbSize); if (idx < 0) idx += pbSize;
+                    float w = std::min(1.f, fxT / 64.f);
+                    bl = pbL[idx] * w + L * (1.f - w); br = pbR[idx] * w + R * (1.f - w);
+                } else { // tape stop
+                    readPos += tapeRate;
+                    tapeRate = std::max(0.f, tapeRate - 1.f / (0.9f * sr));
+                    double rp = readPos; while (rp < 0) rp += pbSize; while (rp >= pbSize) rp -= pbSize;
+                    int i0 = (int)rp; float fr = (float)(rp - i0); int i1 = (i0 + 1) % pbSize;
+                    float g = std::min(1.f, tapeRate * 3.f);
+                    bl = (pbL[i0] + (pbL[i1] - pbL[i0]) * fr) * g; br = (pbR[i0] + (pbR[i1] - pbR[i0]) * fr) * g;
+                }
+                ++fxT;
+                L = L + (bl - L) * bufMix; R = R + (br - R) * bufMix;
+            } else if (bufMix <= 0.f) genMode = -1;
+            if (++pw >= pbSize) pw = 0;
+
+            // ---- lo-fi wobble
+            mixLofi += clampf((fLofi ? 1.f : 0.f) - mixLofi, -ramp, ramp);
+            wowL[ww] = L; wowR[ww] = R;
+            if (mixLofi > 0.f) {
+                wowPh += 0.7f / sr; if (wowPh >= 1.f) wowPh -= 1.f;
+                flutPh += 6.3f / sr; if (flutPh >= 1.f) flutPh -= 1.f;
+                float d = 0.006f * sr * (1.f + 0.45f * std::sin(kTwoPi * wowPh) + 0.08f * std::sin(kTwoPi * flutPh));
+                float rp = (float)ww - d; if (rp < 0) rp += 4096.f;
+                int i0 = (int)rp; float fr = rp - i0; int i1 = (i0 + 1) & 4095;
+                float wl = lofiL.lp(softclip((wowL[i0] + (wowL[i1] - wowL[i0]) * fr) * 1.3f)) + rng.next() * 0.003f;
+                float wr = lofiR.lp(softclip((wowR[i0] + (wowR[i1] - wowR[i0]) * fr) * 1.3f)) + rng.next() * 0.003f;
+                L += (wl - L) * mixLofi; R += (wr - R) * mixLofi;
+            }
+            ww = (ww + 1) & 4095;
+
+            // ---- DJ filter
+            mixFilter += clampf((fFilter ? 1.f : 0.f) - mixFilter, -ramp, ramp);
+            {
+                float a, b, c;
+                pfL.proc(L, a, b, c); float fl = filterHP ? c : a;
+                pfR.proc(R, a, b, c); float fr = filterHP ? c : a;
+                if (mixFilter > 0.f) { L += (fl - L) * mixFilter; R += (fr - R) * mixFilter; }
+            }
+            // ---- bit crush
+            mixCrush += clampf((fCrush ? 1.f : 0.f) - mixCrush, -ramp, ramp);
+            if (mixCrush > 0.f) {
+                if (++crC >= 8) { crC = 0; crL = std::round(L * 24.f) / 24.f; crR = std::round(R * 24.f) / 24.f; }
+                L += (crL - L) * mixCrush; R += (crR - R) * mixCrush;
+            }
+            // ---- trance gate (1/16)
+            gatePh += stepsPerSample;
+            mixGate += clampf((fGate ? 1.f : 0.f) - mixGate, -ramp, ramp);
+            {
+                float ph = (float)(gatePh - std::floor(gatePh));
+                gateS += ((ph < 0.5f ? 1.f : 0.f) - gateS) * 0.02f;
+                if (mixGate > 0.f) { float g = 1.f - mixGate * (1.f - gateS); L *= g; R *= g; }
+            }
+            // ---- compressor
+            {
+                float x = std::max(std::fabs(L), std::fabs(R));
+                compEnv += (x - compEnv) * (x > compEnv ? cAtk : cRel);
+                float lvl = 20.f * std::log10(compEnv + 1e-9f);
+                float over = lvl - cThr, gr = 0.f;
+                if (over >= 3.f) gr = over * cSlope;
+                else if (over > -3.f) gr = (over + 3.f) * (over + 3.f) / 12.f * cSlope;
+                if (gr > grMax) grMax = gr;
+                if (cMix > 0.f) {
+                    float g = std::pow(10.f, (cMake - gr) / 20.f);
+                    L = L + (L * g - L) * cMix; R = R + (R * g - R) * cMix;
+                }
+            }
             L = softclip(L * drv) * vol; R = softclip(R * drv) * vol;
             out[(done + i) * 2] = L; out[(done + i) * 2 + 1] = R;
             float a = std::max(std::fabs(L), std::fabs(R)); if (a > pk) pk = a;
         }
+        compGR.store(grMax, std::memory_order_relaxed);
         peak.store(pk, std::memory_order_relaxed);
         done += n;
     }

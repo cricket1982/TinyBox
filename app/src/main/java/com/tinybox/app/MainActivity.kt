@@ -46,7 +46,7 @@ class MainActivity : Activity() {
     }
 
     override fun onResume() { super.onResume(); hideSystemBars(); ui.post(ticker) }
-    override fun onPause() { super.onPause(); ui.removeCallbacks(ticker); saveTo(autosave) }
+    override fun onPause() { super.onPause(); ui.removeCallbacks(ticker); view.releaseFx(); saveTo(autosave) }
     override fun onDestroy() { super.onDestroy(); if (isFinishing) Native.stop() }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) hideSystemBars() }
 
@@ -143,12 +143,11 @@ class MainActivity : Activity() {
     }
 
     fun chooseMachine(t: Int) {
-        val names = Defs.machines.mapIndexed { i, m ->
-            val group = when { i < 6 -> "Classic drum"; i < 9 || i == 13 -> "Physical model"; i == 9 || i == 11 -> "Sample"; else -> "Synth" }
-            if (group.isEmpty()) m.name else "${m.name}  ($group)"
-        }.toTypedArray()
+        val order = Defs.pickerOrder
+        val names = order.map { "${Defs.machines[it].name}  (${Defs.group(it)})" }.toTypedArray()
         AlertDialog.Builder(this).setTitle("Track ${t + 1} machine")
-            .setSingleChoiceItems(names, project.tracks[t].machine) { d, which ->
+            .setSingleChoiceItems(names, order.indexOf(project.tracks[t].machine)) { d, pick ->
+                val which = order[pick]
                 val tr = project.tracks[t]
                 tr.setMachineDefaults(which)
                 Native.setMachine(t, which)
@@ -193,7 +192,7 @@ class MainActivity : Activity() {
                 val tr = project.tracks[t]
                 decoded[t] = d; peakCaches[t] = null
                 tr.sampleUri = uri.toString(); tr.sampleName = d.name
-                if (!keepSlices || tr.slices.any { it >= d.frames }) tr.slices = AudioLoader.evenSlices(d.frames, 16)
+                if (!keepSlices || tr.slices.any { it >= d.frames }) tr.slices = AudioLoader.transientSlices(d, tr.sliceSens)
                 Native.loadSample(t, d.l, d.r, d.sampleRate.toFloat())
                 Native.setSlices(t, tr.slices)
                 view.invalidate()
@@ -201,16 +200,12 @@ class MainActivity : Activity() {
         }
     }
 
-    fun setEvenSlices(t: Int, n: Int) {
-        val d = decoded[t] ?: run { toast("Load a sample first"); return }
-        project.tracks[t].slices = AudioLoader.evenSlices(d.frames, n)
-        Native.setSlices(t, project.tracks[t].slices)
-    }
 
-    fun setAutoSlices(t: Int, max: Int) {
+    fun setAutoSlices(t: Int) {
         val d = decoded[t] ?: run { toast("Load a sample first"); return }
+        val sens = project.tracks[t].sliceSens
         thread {
-            val s = AudioLoader.transientSlices(d, max)
+            val s = AudioLoader.transientSlices(d, sens)
             ui.post { project.tracks[t].slices = s; Native.setSlices(t, s); toast("Found ${s.size} slices"); view.invalidate() }
         }
     }

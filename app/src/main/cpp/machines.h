@@ -16,6 +16,8 @@ enum MachineId {
     M_PMDRUM, M_PMCYM, M_PMBAR,
     M_SLICER, M_SYNTH,
     M_GRAIN, M_FMSYN, M_STRING,
+    M_CHIP, M_KSDRUM, M_VOX,
+    M_WEST, M_PD, M_FORMANT,
     M_COUNT
 };
 
@@ -900,6 +902,314 @@ public:
     }
 };
 
+// ================================================================ v0.3 machines
+template <class V, int N>
+V *allocVoice(V (&v)[N]) {
+    V *nv = nullptr;
+    for (auto &x : v) if (x.env.stage == 0) { nv = &x; break; }
+    if (!nv) for (auto &x : v) if (x.env.stage == 3 && (!nv || x.age > nv->age)) nv = &x;
+    if (!nv) { nv = &v[0]; for (auto &x : v) if (x.age > nv->age) nv = &x; }
+    return nv;
+}
+#define POLY_COMMON_TRIGGER \
+    void trigger(const TrigParams &t) override { \
+        for (int k = 0; k < t.nnotes; ++k) if (t.notes[k] >= 0) start(std::clamp(t.notes[k], 0, 127), t.vel, t.gateSamples); } \
+    void noteOff(int note) override { \
+        for (auto &x : v) if (x.note == note && x.env.stage && x.env.stage < 3 && x.gateLeft < 0) x.env.stage = 3; } \
+    void allOff() override { for (auto &x : v) if (x.env.stage) x.env.stage = 3; }
+
+// shared vowel formant filter (a e i o u)
+struct Formants {
+    SVF f[3];
+    static constexpr float kVow[5][3] = {{650, 1080, 2650}, {400, 1700, 2600}, {290, 1870, 2800}, {400, 800, 2600}, {350, 600, 2700}};
+    static constexpr float kGain[3] = {1.f, 0.6f, 0.35f};
+    void set(float vowel, float shift, float q, float sr) {
+        float pos = clampf(vowel, 0.f, 1.f) * 3.999f;
+        int i = (int)pos; float fr = pos - i;
+        for (int k = 0; k < 3; ++k) {
+            float hz = lerpf(kVow[i][k], kVow[i + 1][k], fr) * shift;
+            f[k].set(hz, q * (1.f + k * 0.3f), sr);
+        }
+    }
+    inline float tick(float x) {
+        float o = 0.f;
+        for (int k = 0; k < 3; ++k) { float l, b, h; f[k].proc(x, l, b, h); o += b * f[k].k * kGain[k]; }
+        return o;
+    }
+};
+constexpr float Formants::kVow[5][3];
+constexpr float Formants::kGain[3];
+
+// ---------------------------------------------------------------- Chip percussion (8-bit)
+class ChipPerc : public Machine {
+    float ph = 0, f0 = 200, sweep = 0, pEnv = 0, pC = 0, amp = 0, ampC = 0, noiseMix = 0, duty = 0.5f;
+    float nph = 0, levels = 64, held = 0; int holdN = 1, holdC = 0; bool shortMode = false;
+    uint16_t lfsr = 1;
+public:
+    void trigger(const TrigParams &t) override {
+        const float *p = t.p;
+        f0 = expo(p[0], 40.f, 2000.f);
+        ampC = decayCoef(expo(p[1], 0.02f, 1.5f), sr);
+        sweep = (p[2] - 0.5f) * 8.f;          // octaves, bipolar
+        pC = decayCoef(expo(p[3], 0.005f, 0.5f), sr);
+        noiseMix = p[4];
+        shortMode = p[5] > 0.5f;
+        levels = std::pow(2.f, 1.f + (1.f - p[6]) * 11.f);
+        holdN = 1 + (int)(p[7] * 31.f);
+        duty = 0.125f + p[8] * 0.375f;
+        amp = t.vel; pEnv = 1.f; ph = 0.f; lfsr = 0x7fff;
+    }
+    void render(float *l, float *r, int n, const float *) override {
+        if (amp < 1e-4f) return;
+        for (int i = 0; i < n; ++i) {
+            float f = f0 * std::pow(2.f, sweep * pEnv);
+            ph += f / sr; ph -= std::floor(ph);
+            float sq = ph < duty ? 1.f : -1.f;
+            nph += f * 8.f / sr;
+            while (nph >= 1.f) {
+                nph -= 1.f;
+                uint16_t bit = (lfsr ^ (lfsr >> (shortMode ? 6 : 1))) & 1;
+                lfsr = (uint16_t)((lfsr >> 1) | (bit << 14));
+            }
+            float nz = (lfsr & 1) ? 1.f : -1.f;
+            float s = (sq * (1.f - noiseMix) + nz * noiseMix) * amp;
+            if (++holdC >= holdN) { holdC = 0; held = std::round(s * levels) / levels; }
+            l[i] += held * 0.55f; r[i] += held * 0.55f;
+            amp *= ampC; pEnv *= pC;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- Karplus-Strong drum
+class KSDrum : public Machine {
+    static constexpr int BUF = 4096;
+    float buf[BUF] = {0}; int w = 0;
+    float len = 100, g = 0.99f, blend = 0.5f, z = 0, d = 0.5f, bend = 0, bendEnv = 0, bendC = 0, drive = 0, level = 0;
+    bool on = false; Rng rng{1357};
+public:
+    void trigger(const TrigParams &t) override {
+        const float *p = t.p;
+        float f = expo(p[0], 40.f, 900.f);
+        len = clampf(sr / f, 4.f, BUF / 2.f);
+        g = std::pow(10.f, -3.f / (expo(p[1], 0.05f, 3.f) * f));
+        blend = p[2];
+        float a = expo(p[3], 0.03f, 1.f), lp = 0.f;
+        d = 0.15f + p[4] * 0.8f;
+        bend = p[5] * 0.8f; bendEnv = 1.f; bendC = decayCoef(expo(p[1], 0.05f, 2.f), sr);
+        drive = p[6];
+        int N = (int)(len * (1.f + bend)) + 2;
+        for (int i = 0; i < N; ++i) { lp += (rng.next() - lp) * a; buf[(w - N + i + BUF) % BUF] = lp * t.vel; }
+        on = true; level = 1.f;
+    }
+    void render(float *l, float *r, int n, const float *) override {
+        if (!on) return;
+        const float gg = 1.f + drive * 5.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        for (int i = 0; i < n; ++i) {
+            float cl = len * (1.f + bend * (1.f - bendEnv));
+            bendEnv *= bendC;
+            float rp = (float)w - cl; if (rp < 0) rp += BUF;
+            int i0 = (int)rp; float fr = rp - i0; int i1 = (i0 + 1) % BUF;
+            float y = buf[i0] + (buf[i1] - buf[i0]) * fr;
+            z = y * (1.f - d) + z * d;
+            float sgn = rng.uni() < blend ? 1.f : -1.f;
+            buf[w] = sgn * z * g; w = (w + 1) % BUF;
+            level = level * 0.999f + std::fabs(y) * 0.001f;
+            float s = softclip(y * 1.2f * gg) / gn;
+            l[i] += s; r[i] += s;
+        }
+        if (level < 1e-5f) { on = false; std::memset(buf, 0, sizeof(buf)); }
+    }
+};
+
+// ---------------------------------------------------------------- Vox percussion (formant bursts)
+class VoxPerc : public Machine {
+    Formants fm; Rng rng{8642};
+    float amp = 0, ampC = 0, f0 = 120, ph = 0, breath = 0.5f, v0 = 0, v1 = 0, shift = 1, q = 6, env = 0, drive = 0;
+    int ctr = 0;
+public:
+    void trigger(const TrigParams &t) override {
+        const float *p = t.p;
+        v0 = p[0];
+        ampC = decayCoef(expo(p[1], 0.03f, 1.2f), sr);
+        f0 = expo(p[2], 60.f, 600.f);
+        breath = p[3];
+        shift = expo(p[4], 0.6f, 1.8f);
+        v1 = clampf(v0 + (p[5] - 0.5f) * 2.f, 0.f, 1.f);
+        q = 2.f + p[6] * 14.f;
+        drive = p[7];
+        amp = t.vel; env = 1.f; ctr = 0;
+    }
+    void render(float *l, float *r, int n, const float *) override {
+        if (amp < 1e-4f) return;
+        const float gg = 1.f + drive * 5.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        for (int i = 0; i < n; ++i) {
+            if ((ctr++ & 15) == 0) fm.set(lerpf(v1, v0, env), shift, q, sr);
+            ph += f0 / sr; float buzz = 0.f;
+            if (ph >= 1.f) { ph -= 1.f; buzz = 1.f; }
+            float x = buzz * 4.f * (1.f - breath) + rng.next() * breath;
+            float s = fm.tick(x) * amp * 4.5f;
+            s = softclip(s * gg) / gn;
+            l[i] += s; r[i] += s;
+            amp *= ampC; env = amp;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- West Coast (FM + wavefolder + low-pass gate)
+class WestCoast : public Machine {
+    struct V { int note = -1; ADSR env; float vel = 0, gateLeft = -1, freq = 0, cph = 0, mph = 0; int age = 0; SVF lpg; };
+    static constexpr int NV = 8;
+    V v[NV]; float lfo = 0; int ctr = 0;
+    static constexpr float kRatios[12] = {0.5f, 1.f, 1.5f, 2.f, 2.5f, 3.f, 3.5f, 4.f, 5.f, 6.f, 7.f, 9.f};
+    void start(int note, float vel, float gate) {
+        V *x = allocVoice(v);
+        x->note = note; x->vel = vel; x->gateLeft = gate; x->env.stage = 1; x->age = 0; x->freq = mtof((float)note);
+        if (x->env.env < 0.001f) { x->cph = x->mph = 0; x->lpg.reset(); }
+    }
+public:
+    POLY_COMMON_TRIGGER
+    void render(float *l, float *r, int n, const float *p) override {
+        bool any = false; for (auto &x : v) any |= x.env.stage != 0;
+        if (!any) return;
+        const float ratio = kRatios[std::clamp((int)(p[0] * 11.99f), 0, 11)];
+        const float idx = p[1] * 5.f, fold = p[2], sym = (p[3] - 0.5f) * 1.5f, foldEnv = p[4];
+        const float vib = p[5] * 0.6f, q = 0.5f + p[10] * 6.f;
+        const float drive = p[11], gg = 1.f + drive * 4.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        for (auto &x : v) if (x.env.stage) x.env.set(expo(p[6], 0.001f, 3.f), expo(p[7], 0.02f, 4.f), p[8], expo(p[9], 0.02f, 5.f), sr);
+        for (int i = 0; i < n; ++i) {
+            lfo += 5.f / sr; if (lfo >= 1.f) lfo -= 1.f;
+            const float vm = vib > 0.f ? std::pow(2.f, vib * std::sin(kTwoPi * lfo) / 12.f) : 1.f;
+            const bool upd = (ctr++ & 15) == 0;
+            float out = 0.f;
+            for (auto &x : v) {
+                if (!x.env.stage) continue;
+                ++x.age;
+                if (x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.env.stage < 3) x.env.stage = 3; }
+                float e = x.env.tick();
+                if (!x.env.stage) continue;
+                float f = x.freq * vm / sr;
+                x.mph += f * ratio; x.mph -= std::floor(x.mph);
+                x.cph += f; x.cph -= std::floor(x.cph);
+                float c = std::sin(kTwoPi * x.cph + std::sin(kTwoPi * x.mph) * idx);
+                float a = 1.f + (fold + foldEnv * e) * 8.f;
+                float y = std::sin((c + sym) * a * kPi * 0.5f);
+                if (upd) x.lpg.set(30.f * std::pow(2.f, e * 9.5f), q, sr);
+                out += x.lpg.lp(y) * e * x.vel * 0.35f;
+            }
+            out = softclip(out * gg) / gn;
+            l[i] += out; r[i] += out;
+        }
+    }
+};
+constexpr float WestCoast::kRatios[12];
+
+// ---------------------------------------------------------------- Phase distortion (CZ style)
+class PhaseDist : public Machine {
+    struct V { int note = -1; ADSR env; float vel = 0, gateLeft = -1, freq = 0, p1 = 0, p2 = 0, dcw = 0; int age = 0; };
+    static constexpr int NV = 8;
+    V v[NV]; float lfo = 0;
+    void start(int note, float vel, float gate) {
+        V *x = allocVoice(v);
+        x->note = note; x->vel = vel; x->gateLeft = gate; x->env.stage = 1; x->age = 0; x->freq = mtof((float)note); x->dcw = 1.f;
+        if (x->env.env < 0.001f) { x->p1 = 0; x->p2 = 0.25f; }
+    }
+    static inline float pd(float p, int wave, float a, float reso) {
+        if (wave == 0) { // saw
+            float k = 0.5f - a * 0.49f;
+            float w = p < k ? p * 0.5f / k : 0.5f + (p - k) * 0.5f / (1.f - k);
+            return -std::cos(kTwoPi * w);
+        } else if (wave == 1) { // square-ish
+            float d = 0.5f - a * 0.48f, w;
+            if (p < d) w = p / d * 0.5f; else if (p < 0.5f) w = 0.5f;
+            else if (p < 0.5f + d) w = 0.5f + (p - 0.5f) / d * 0.5f; else w = 1.f;
+            return -std::cos(kTwoPi * w);
+        }
+        // resonant: windowed cosine at a higher ratio
+        float ratio = 1.f + a * reso;
+        return (1.f - p) * std::cos(kTwoPi * p * ratio) * 1.4f;
+    }
+public:
+    POLY_COMMON_TRIGGER
+    void render(float *l, float *r, int n, const float *p) override {
+        bool any = false; for (auto &x : v) any |= x.env.stage != 0;
+        if (!any) return;
+        const int wave = std::clamp((int)(p[0] * 2.99f), 0, 2);
+        const float base = p[1], envAmt = p[2];
+        const float dC = decayCoef(expo(p[3], 0.02f, 4.f), sr);
+        const float reso = 1.f + p[4] * 15.f;
+        const float det = p[5] * 20.f, m1 = std::pow(2.f, -det / 1200.f), m2 = std::pow(2.f, det / 1200.f);
+        const float vib = p[10] * 0.6f;
+        const float drive = p[11], gg = 1.f + drive * 4.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        for (auto &x : v) if (x.env.stage) x.env.set(expo(p[6], 0.001f, 3.f), expo(p[7], 0.02f, 4.f), p[8], expo(p[9], 0.02f, 5.f), sr);
+        for (int i = 0; i < n; ++i) {
+            lfo += 5.f / sr; if (lfo >= 1.f) lfo -= 1.f;
+            const float vm = vib > 0.f ? std::pow(2.f, vib * std::sin(kTwoPi * lfo) / 12.f) : 1.f;
+            float out = 0.f;
+            for (auto &x : v) {
+                if (!x.env.stage) continue;
+                ++x.age;
+                if (x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.env.stage < 3) x.env.stage = 3; }
+                float e = x.env.tick();
+                if (!x.env.stage) continue;
+                float a = clampf(base + envAmt * x.dcw, 0.f, 0.98f);
+                x.dcw *= dC;
+                float f = x.freq * vm / sr;
+                x.p1 += f * m1; x.p1 -= std::floor(x.p1);
+                x.p2 += f * m2; x.p2 -= std::floor(x.p2);
+                float s = (pd(x.p1, wave, a, reso) + pd(x.p2, wave, a, reso)) * 0.5f;
+                out += s * e * x.vel * 0.3f;
+            }
+            out = softclip(out * gg) / gn;
+            l[i] += out; r[i] += out;
+        }
+    }
+};
+
+// ---------------------------------------------------------------- Formant (vowel) synth
+class FormantSynth : public Machine {
+    struct V { int note = -1; ADSR env; float vel = 0, gateLeft = -1, freq = 0, ph1 = 0, ph2 = 0.3f; int age = 0; Formants fm; };
+    static constexpr int NV = 8;
+    V v[NV]; float lfo = 0; int ctr = 0; Rng rng{97531};
+    void start(int note, float vel, float gate) {
+        V *x = allocVoice(v);
+        x->note = note; x->vel = vel; x->gateLeft = gate; x->env.stage = 1; x->age = 0; x->freq = mtof((float)note);
+    }
+public:
+    POLY_COMMON_TRIGGER
+    void render(float *l, float *r, int n, const float *p) override {
+        bool any = false; for (auto &x : v) any |= x.env.stage != 0;
+        if (!any) return;
+        const float vowel = p[0], vEnv = (p[1] - 0.5f) * 2.f, shift = expo(p[2], 0.6f, 1.8f), q = 2.f + p[3] * 16.f;
+        const float breath = p[4];
+        const float det = p[5] * 20.f, m1 = std::pow(2.f, -det / 1200.f), m2 = std::pow(2.f, det / 1200.f);
+        const float vib = p[10] * 0.6f;
+        const float drive = p[11], gg = 1.f + drive * 4.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        for (auto &x : v) if (x.env.stage) x.env.set(expo(p[6], 0.001f, 3.f), expo(p[7], 0.02f, 4.f), p[8], expo(p[9], 0.02f, 5.f), sr);
+        for (int i = 0; i < n; ++i) {
+            lfo += 5.f / sr; if (lfo >= 1.f) lfo -= 1.f;
+            const float vm = vib > 0.f ? std::pow(2.f, vib * std::sin(kTwoPi * lfo) / 12.f) : 1.f;
+            const bool upd = (ctr++ & 15) == 0;
+            float out = 0.f;
+            for (auto &x : v) {
+                if (!x.env.stage) continue;
+                ++x.age;
+                if (x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.env.stage < 3) x.env.stage = 3; }
+                float e = x.env.tick();
+                if (!x.env.stage) continue;
+                if (upd) x.fm.set(clampf(vowel + vEnv * e, 0.f, 1.f), shift, q, sr);
+                float dt = x.freq * vm / sr;
+                x.ph1 += dt * m1; if (x.ph1 >= 1.f) x.ph1 -= 1.f;
+                x.ph2 += dt * m2; if (x.ph2 >= 1.f) x.ph2 -= 1.f;
+                float saw = (2.f * x.ph1 - 1.f - polyblep(x.ph1, dt * m1)) + (2.f * x.ph2 - 1.f - polyblep(x.ph2, dt * m2));
+                float exc = saw * 0.5f * (1.f - breath) + rng.next() * breath;
+                out += x.fm.tick(exc) * e * x.vel * 1.1f;
+            }
+            out = softclip(out * gg) / gn;
+            l[i] += out; r[i] += out;
+        }
+    }
+};
+
 inline Machine *makeMachine(int id, float sr, SampleSlot *slot) {
     Machine *m = nullptr;
     switch (id) {
@@ -916,6 +1226,12 @@ inline Machine *makeMachine(int id, float sr, SampleSlot *slot) {
         case M_GRAIN: { auto *g = new Granular(); g->slot = slot; m = g; break; }
         case M_FMSYN: m = new FMSynth(); break;
         case M_STRING: m = new PMString(); break;
+        case M_CHIP: m = new ChipPerc(); break;
+        case M_KSDRUM: m = new KSDrum(); break;
+        case M_VOX: m = new VoxPerc(); break;
+        case M_WEST: m = new WestCoast(); break;
+        case M_PD: m = new PhaseDist(); break;
+        case M_FORMANT: m = new FormantSynth(); break;
         case M_SYNTH: default: m = new PolySynth(); break;
     }
     m->sr = sr;
