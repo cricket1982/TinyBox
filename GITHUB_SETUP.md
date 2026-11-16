@@ -42,7 +42,7 @@ You only need that one secret. The passwords are Android Studio's standard debug
 3. Give it a title, and notes if you like. Click **Publish release**.
 4. The **Actions** tab shows the build running (about 5 minutes). When it goes green, `TinyBox-v0.2.apk` appears on the release.
 
-Use a new, higher tag for each release (v0.3, v0.4 …).
+Use a new, higher tag for each release (v0.3, v0.4 …), written with dots. Claude can also start a build by pushing a tag; the release then appears on its own.
 
 ## 5. Install on the tablet
 1. On the tablet, open Chrome at `github.com/<your-username>/TinyBox/releases`. Bookmark it.

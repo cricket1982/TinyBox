@@ -1,11 +1,13 @@
 name: Build APK
 
-# Builds a signed APK and attaches it to the GitHub Release.
-# Trigger: publish a Release on github.com (Releases -> Draft a new release),
-# or run it by hand from the Actions tab.
+# Builds a signed APK and attaches it to a GitHub Release.
+# Triggers:
+#  - publishing a Release on github.com with a new tag (the tag push starts the build)
+#  - pushing a tag starting with "v" (e.g. v0.3) - the release is created automatically
+#  - running it by hand from the Actions tab (APK saved as a run artifact)
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -39,22 +41,27 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-          VERSION_NAME: ${{ github.event.release.tag_name }}
+          TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
         run: |
+          # make the tag safe for file names (e.g. "v0,2" -> "v0.2")
+          SAFE=$(echo "$TAG" | sed 's/,/./g; s/[^A-Za-z0-9._-]/-/g')
+          export VERSION_NAME="$SAFE"
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
-          NAME="TinyBox-${VERSION_NAME:-build-${GITHUB_RUN_NUMBER}}.apk"
+          NAME="TinyBox-${SAFE:-build-${GITHUB_RUN_NUMBER}}.apk"
           cp app/build/outputs/apk/release/app-release.apk "$NAME"
           echo "APK_NAME=$NAME" >> "$GITHUB_ENV"
 
       - name: Attach APK to the release
-        if: github.event_name == 'release'
+        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           files: ${{ env.APK_NAME }}
+          fail_on_unmatched_files: true
 
       - name: Keep APK as a downloadable artifact (manual runs)
-        if: github.event_name != 'release'
+        if: github.ref_type != 'tag'
         uses: actions/upload-artifact@v4
         with:
           name: TinyBox-apk
