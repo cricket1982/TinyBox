@@ -36,6 +36,22 @@ To build on GitHub and install on the tablet without a cable, see **GITHUB_SETUP
 
 Every track also has **Level, Pan, Delay send and Reverb send**. The master section has a tempo-synced ping-pong delay, a reverb, drive and a soft limiter.
 
+## Top bar
+PLAY, BPM, SWING · pages **SEQ PADS MIX SONG FX MOD** · patterns A–H · FILL, REC · **☰ MENU** (save, load, new, copy/paste pattern, clear track/pattern).
+
+## PADS page
+- **Drum tracks:** 8 big finger-drum pads, one per track.
+- **Synth tracks:** a full-height keyboard.
+- **Granular tracks:** a waveform with LOAD, plus a keyboard.
+- **Slicer tracks:** the slice editor (DETECT, SENS, EDIT, ZOOM) above a 4×4 grid of MPC-style slice pads, with bank buttons for slices 1–16, 17–32, 33–48 and 49–64. The SEQ page shows the current bank as a row of 16 small pads.
+
+## MOD page (4 LFOs)
+- **Wave:** tap to cycle through Sine, Triangle, Saw up, Saw down, Square, S&H (stepped random) and Random (smooth).
+- **Rate:** in Hz in FREE mode, or from 1/32 note to 8 bars in SYNC mode, locked to the sequencer.
+- **RETRIG:** only applies in FREE mode. It restarts the LFO each time destination 1's track triggers.
+- **Destinations:** 3 per LFO. Tap one to pick a track and parameter, or a master parameter, then set its ± depth. Double-tap a depth knob to zero it.
+- **When modulation applies:** drum and slicer sounds take it when they're triggered. The synths, track level, pan and sends, and the master parameters follow it continuously.
+
 ## Pages (top bar)
 - **SEQ**: the step sequencer, sound knobs and performance area.
 - **MIX**: one channel strip per track, plus master. Each strip has Pan, Delay and Reverb knobs, a fader with dB readout, a peak meter, and Mute/Solo. The master strip has delay return, reverb return, drive and volume. Double-tap any control to reset it.
@@ -44,6 +60,16 @@ Every track also has **Level, Pan, Delay send and Reverb send**. The master sect
   - Tap a row to start playback from there. Turn on SONG MODE, then press PLAY. LOOP repeats the song; with LOOP off, playback stops at the end. Long-press CLEAR to empty the song.
 
 ## FX page (performance effects on the master)
+There are 12 pads. Tap **EDIT**, then tap a pad to choose its effect from the full library, or set it to empty. The library holds:
+- **Repeats:** 1/4, 1/8, 1/16, 1/32, 1/8T and 1/16T
+- **Buffer effects:** glitch, reverse, tape stop and half speed
+- **Rhythmic:** gate and pump
+- **Tone and dirt:** crush, distort, ring mod and flanger
+- **Kills:** low, mid and high
+- **Space:** dub throw, freeze and lo-fi
+- **Stereo:** mono and wide
+
+The defaults:
 - **Pads:** REPEAT 1/4, 1/8, 1/16 and 1/32 (beat repeat), REVERSE, TAPE STOP, GATE 1/16, CRUSH, DUB THROW (everything into a high-feedback delay), FREEZE (infinite reverb) and LO-FI (wow, flutter and dull tape).
 - **XY pad:** a DJ filter. Left of centre is low-pass, right is high-pass, and moving up adds resonance.
 - **Using them:** hold a pad to apply it. With LATCH on, a tap toggles the pad instead. ALL OFF releases everything.

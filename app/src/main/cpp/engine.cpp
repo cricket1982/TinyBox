@@ -19,6 +19,10 @@ Engine::Engine(float sampleRate) : sr(sampleRate) {
     master[MP_DLEVEL] = 0.6f; master[MP_RLEVEL] = 0.6f; master[MP_DRIVE] = 0.f; master[MP_VOLUME] = 0.8f;
     master[MP_CTHR] = 0.7f; master[MP_CRATIO] = 0.45f; master[MP_CATK] = 0.6f; master[MP_CREL] = 0.5f; master[MP_CGAIN] = 0.f; master[MP_CMIX] = 0.f;
     for (auto &f : fxOn) f.store(false);
+    for (auto &v : lfoVal) v.store(0.f);
+    std::memset(trackMod, 0, sizeof(trackMod)); std::memset(masterMod, 0, sizeof(masterMod));
+    for (int i = 0; i < kMasterParams; ++i) mEff[i] = master[i];
+    for (auto &tr : tracks) std::memcpy(tr.eff, tr.active, sizeof(tr.eff));
     setSampleRate(sr);
 }
 
@@ -35,6 +39,9 @@ void Engine::setSampleRate(float s) {
     pbL.assign((int)(sr * 4.f), 0.f); pbR.assign((int)(sr * 4.f), 0.f); pw = 0;
     wowL.assign(4096, 0.f); wowR.assign(4096, 0.f); ww = 0;
     lofiL.setLP(3500.f, sr); lofiR.setLP(3500.f, sr);
+    kLoL.set(250.f, 0.6f, sr); kLoR.set(250.f, 0.6f, sr); kHiL.set(2500.f, 0.6f, sr); kHiR.set(2500.f, 0.6f, sr);
+    flL.assign(2048, 0.f); flR.assign(2048, 0.f); flW = 0;
+    distL.setLP(7000.f, sr); distR.setLP(7000.f, sr);
 }
 
 void Engine::freeRetired() {
@@ -223,6 +230,53 @@ void Engine::runSequencer(int n) {
     relPos.store(songPos - (double)patStart, std::memory_order_relaxed);
 }
 
+void Engine::runLfos(int n) {
+    std::memset(trackMod, 0, sizeof(trackMod)); std::memset(masterMod, 0, sizeof(masterMod));
+    static const double kDivSteps[9] = {0.5, 1, 2, 4, 8, 16, 32, 64, 128};
+    const bool play = playing.load(std::memory_order_relaxed);
+    for (int k = 0; k < kLfos; ++k) {
+        Lfo &L = lfos[k];
+        bool used = false;
+        for (int d = 0; d < 3; ++d) used |= L.dest[d] >= 0 && L.depth[d] != 0.f;
+        double total;
+        if (L.sync && play) {
+            double div = kDivSteps[std::clamp((int)(L.rate * 8.99f), 0, 8)];
+            total = songPos / div;
+        } else {
+            float hz = expo(L.rate, 0.02f, 20.f);
+            if (L.retrig) {
+                int dt = L.dest[0] >= 0 && L.dest[0] < kTracks * kTrackParams ? L.dest[0] / kTrackParams : -1;
+                if (dt >= 0) { int c = tracks[dt].trigCount.load(std::memory_order_relaxed); if (c != L.lastTrig) { L.lastTrig = c; L.phase = std::floor(L.phase) + 1.0; } }
+            }
+            L.phase += hz * n / sr;
+            total = L.phase;
+        }
+        long long cyc = (long long)std::floor(total);
+        float f = (float)(total - (double)cyc);
+        if (cyc != L.cycle) { L.cycle = cyc; L.shPrev = L.sh; L.sh = rng.next(); }
+        float v = 0.f;
+        switch (L.wave) {
+            case 0: v = std::sin(kTwoPi * f); break;
+            case 1: v = 1.f - 4.f * std::fabs(f - 0.5f); break;
+            case 2: v = 2.f * f - 1.f; break;
+            case 3: v = 1.f - 2.f * f; break;
+            case 4: v = f < 0.5f ? 1.f : -1.f; break;
+            case 5: v = L.sh; break;
+            default: { float sm = f * f * (3.f - 2.f * f); v = L.shPrev + (L.sh - L.shPrev) * sm; }
+        }
+        lfoVal[k].store(v, std::memory_order_relaxed);
+        if (!used) continue;
+        for (int d = 0; d < 3; ++d) {
+            int dst = L.dest[d];
+            if (dst < 0 || L.depth[d] == 0.f) continue;
+            float m = v * L.depth[d] * 0.5f;
+            if (dst < kTracks * kTrackParams) trackMod[dst / kTrackParams][dst % kTrackParams] += m;
+            else if (dst >= 1000 && dst < 1000 + kMasterParams) masterMod[dst - 1000] += m;
+        }
+    }
+    for (int i = 0; i < kMasterParams; ++i) mEff[i] = clampf(master[i] + masterMod[i], 0.f, 1.f);
+}
+
 void Engine::process(float *out, int frames) {
     int done = 0;
     while (done < frames) {
@@ -231,6 +285,7 @@ void Engine::process(float *out, int frames) {
         Cmd c;
         while (cmds.pop(c)) handleCmd(c);
         runSequencer(n);
+        runLfos(n);
 
         std::memset(busL, 0, sizeof(float) * n); std::memset(busR, 0, sizeof(float) * n);
         std::memset(dlyL, 0, sizeof(float) * n); std::memset(dlyR, 0, sizeof(float) * n);
@@ -241,25 +296,29 @@ void Engine::process(float *out, int frames) {
         for (int t = 0; t < kTracks; ++t) {
             Track &tr = tracks[t];
             Machine *m = tr.mach;
+            for (int i = 0; i < kTrackParams; ++i) tr.eff[i] = clampf(tr.active[i] + trackMod[t][i], 0.f, 1.f);
             std::memset(tbufL, 0, sizeof(float) * n); std::memset(tbufR, 0, sizeof(float) * n);
             int pos = 0;
             for (int e = 0; e < nev; ++e) {
                 if (evs[e].track != t) continue;
                 int off = std::clamp(evs[e].offset, 0, n);
-                if (off > pos) { m->render(tbufL + pos, tbufR + pos, off - pos, tr.active); pos = off; }
+                if (off > pos) { m->render(tbufL + pos, tbufR + pos, off - pos, tr.eff); pos = off; }
                 if (evs[e].tp.vel < 0.f) { m->noteOff(evs[e].tp.note); continue; }
                 std::memcpy(tr.active, evs[e].tp.p, sizeof(tr.active));
-                m->trigger(evs[e].tp);
+                for (int i = 0; i < kTrackParams; ++i) tr.eff[i] = clampf(tr.active[i] + trackMod[t][i], 0.f, 1.f);
+                TrigParams tm = evs[e].tp;
+                std::memcpy(tm.p, tr.eff, sizeof(tm.p));
+                m->trigger(tm);
                 tr.trigCount.fetch_add(1, std::memory_order_relaxed);
             }
-            if (pos < n) m->render(tbufL + pos, tbufR + pos, n - pos, tr.active);
+            if (pos < n) m->render(tbufL + pos, tbufR + pos, n - pos, tr.eff);
 
             // mixer (gains ramp over the block to avoid zipper noise)
-            float lv = tr.active[TP_LEVEL]; lv = lv * lv * 1.6f;
+            float lv = tr.eff[TP_LEVEL]; lv = lv * lv * 1.6f;
             if (anySolo && !tr.solo.load(std::memory_order_relaxed)) lv = 0.f;
-            float pa = clampf(tr.active[TP_PAN], 0.f, 1.f) * kPi * 0.5f;
+            float pa = clampf(tr.eff[TP_PAN], 0.f, 1.f) * kPi * 0.5f;
             float tgL = std::cos(pa) * 1.41421f * lv, tgR = std::sin(pa) * 1.41421f * lv;
-            float tgD = tr.active[TP_DLY] * tr.active[TP_DLY], tgV = tr.active[TP_REV] * tr.active[TP_REV];
+            float tgD = tr.eff[TP_DLY] * tr.eff[TP_DLY], tgV = tr.eff[TP_REV] * tr.eff[TP_REV];
             float gL = trackGL[t], gR = trackGR[t], gD = trackGD[t], gV = trackGV[t];
             const float inv = 1.f / n;
             const float dL = (tgL - gL) * inv, dR = (tgR - gR) * inv, dD = (tgD - gD) * inv, dV = (tgV - gV) * inv;
@@ -281,30 +340,33 @@ void Engine::process(float *out, int frames) {
         const float sps = sr * 60.f / (bpm.load() * 4.f);
         const bool dub = fxOn[FX_DUB].load(std::memory_order_relaxed);
         const bool freeze = fxOn[FX_FREEZE].load(std::memory_order_relaxed);
-        delay.target = std::min((float)delay.bl.size() - 4.f, kDlySteps[std::clamp((int)(master[MP_DTIME] * 7.99f), 0, 7)] * sps);
-        const float dfb = dub ? std::max(master[MP_DFB] * 0.95f, 0.85f) : master[MP_DFB] * 0.95f;
-        delay.tl.setLP(expo(master[MP_DTONE], 400.f, 16000.f), sr); delay.tr.a = delay.tl.a;
-        const float dlev = master[MP_DLEVEL] * 1.2f * (dub ? 1.4f : 1.f);
-        const float rfb = freeze ? 0.9995f : 0.7f + master[MP_RSIZE] * 0.28f;
-        const float rdamp = freeze ? 0.f : master[MP_RDAMP] * 0.6f;
-        const float rlev = master[MP_RLEVEL] * 1.5f;
-        const float drv = 1.f + master[MP_DRIVE] * 6.f;
-        const float vol = master[MP_VOLUME] * master[MP_VOLUME] * 1.25f;
+        delay.target = std::min((float)delay.bl.size() - 4.f, kDlySteps[std::clamp((int)(mEff[MP_DTIME] * 7.99f), 0, 7)] * sps);
+        const float dfb = dub ? std::max(mEff[MP_DFB] * 0.95f, 0.85f) : mEff[MP_DFB] * 0.95f;
+        delay.tl.setLP(expo(mEff[MP_DTONE], 400.f, 16000.f), sr); delay.tr.a = delay.tl.a;
+        const float dlev = mEff[MP_DLEVEL] * 1.2f * (dub ? 1.4f : 1.f);
+        const float rfb = freeze ? 0.9995f : 0.7f + mEff[MP_RSIZE] * 0.28f;
+        const float rdamp = freeze ? 0.f : mEff[MP_RDAMP] * 0.6f;
+        const float rlev = mEff[MP_RLEVEL] * 1.5f;
+        const float drv = 1.f + mEff[MP_DRIVE] * 6.f;
+        const float vol = mEff[MP_VOLUME] * mEff[MP_VOLUME] * 1.25f;
         // compressor settings
-        const float cThr = -40.f + master[MP_CTHR] * 40.f;
-        const float cRatio = expo(master[MP_CRATIO], 1.f, 20.f), cSlope = 1.f - 1.f / cRatio;
-        const float cAtk = 1.f - std::exp(-1.f / (expo(master[MP_CATK], 0.0001f, 0.1f) * sr));
-        const float cRel = 1.f - std::exp(-1.f / (expo(master[MP_CREL], 0.02f, 1.f) * sr));
-        const float cMake = master[MP_CGAIN] * 24.f, cMix = master[MP_CMIX];
+        const float cThr = -40.f + mEff[MP_CTHR] * 40.f;
+        const float cRatio = expo(mEff[MP_CRATIO], 1.f, 20.f), cSlope = 1.f - 1.f / cRatio;
+        const float cAtk = 1.f - std::exp(-1.f / (expo(mEff[MP_CATK], 0.0001f, 0.1f) * sr));
+        const float cRel = 1.f - std::exp(-1.f / (expo(mEff[MP_CREL], 0.02f, 1.f) * sr));
+        const float cMake = mEff[MP_CGAIN] * 24.f, cMix = mEff[MP_CMIX];
         float grMax = 0.f;
         // performance FX: detect newly pressed buffer effects (repeat / reverse / tape stop)
-        static const float kRepSteps[4] = {4.f, 2.f, 1.f, 0.5f};
         const int pbSize = (int)pbL.size();
-        for (int id = 0; id < 6; ++id) {
+        for (int id = 0; id < FX_COUNT; ++id) {
+            if (!fxIsBuffer(id)) continue;
             bool on = fxOn[id].load(std::memory_order_relaxed);
             if (on && !prevOn[id]) {
-                bufMode = genMode = id; fxT = 0; fxStart = pw; readPos = pw - 1; tapeRate = 1.f;
-                if (id < 4) repLen = std::max(64, (int)(kRepSteps[id] * sps));
+                bufMode = genMode = id; fxT = 0; fxStart = pw; readPos = pw - 1; tapeRate = 1.f; segT = 0;
+                float st = id == FX_REP4 ? 4.f : id == FX_REP8 ? 2.f : id == FX_REP16 ? 1.f : id == FX_REP32 ? 0.5f
+                         : id == FX_REP8T ? 4.f / 3.f : id == FX_REP16T ? 2.f / 3.f : 1.f;
+                repLen = std::max(64, (int)(st * sps));
+                segLen = std::max(64, (int)sps);
             }
             prevOn[id] = on;
         }
@@ -313,6 +375,9 @@ void Engine::process(float *out, int frames) {
         const bool fCrush = fxOn[FX_CRUSH].load(std::memory_order_relaxed);
         const bool fGate = fxOn[FX_GATE].load(std::memory_order_relaxed);
         const bool fLofi = fxOn[FX_LOFI].load(std::memory_order_relaxed);
+        auto fx = [&](int id) { return fxOn[id].load(std::memory_order_relaxed); };
+        const bool fKL = fx(FX_KILLLOW), fKM = fx(FX_KILLMID), fKH = fx(FX_KILLHIGH);
+        const bool fPump = fx(FX_PUMP), fRing = fx(FX_RING), fFl = fx(FX_FLANGE), fDist = fx(FX_DIST), fMono = fx(FX_MONO), fWide = fx(FX_WIDE);
         {
             float x = fxX.load(), y = fxY.load();
             float q = 0.7f + y * 8.f;
@@ -344,7 +409,8 @@ void Engine::process(float *out, int frames) {
             bufMix += clampf(target - bufMix, -ramp, ramp);
             if (genMode >= 0 && bufMix > 0.f) {
                 float bl = L, br = R;
-                if (genMode < 4) {
+                const bool isRep = genMode <= FX_REP32 || genMode == FX_REP8T || genMode == FX_REP16T;
+                if (isRep) {
                     if (fxT >= repLen) {
                         int ph = (int)(fxT % repLen);
                         int idx = (fxStart + ph) % pbSize;
@@ -356,6 +422,32 @@ void Engine::process(float *out, int frames) {
                     int idx = (int)(((long long)fxStart - back) % pbSize); if (idx < 0) idx += pbSize;
                     float w = std::min(1.f, fxT / 64.f);
                     bl = pbL[idx] * w + L * (1.f - w); br = pbR[idx] * w + R * (1.f - w);
+                } else if (genMode == FX_GLITCH) {
+                    long long st = segT % segLen;
+                    if (st == 0) {
+                        segStart = pw;
+                        float r = rng.uni();
+                        segMode = r < 0.25f ? 0 : (r < 0.8f ? 1 : 2);
+                        static const float kFr[3] = {0.25f, 0.5f, 1.f};
+                        segL = std::max(32, (int)(segLen * kFr[std::min(2, (int)(rng.uni() * 3.f))]));
+                    }
+                    if (segMode != 0) {
+                        int ph = (int)(st % segL);
+                        int idx = segMode == 1 ? segStart - segL + ph : segStart - 1 - ph;
+                        idx %= pbSize; if (idx < 0) idx += pbSize;
+                        float w = std::min(1.f, std::min(ph / 32.f, (segL - ph) / 32.f));
+                        bl = pbL[idx] * w; br = pbR[idx] * w;
+                    }
+                    ++segT;
+                } else if (genMode == FX_HALF) {
+                    readPos += 0.5;
+                    double lag = (double)pw - readPos; if (lag < 0) lag += pbSize;
+                    if (lag > pbSize - 2048) readPos = pw - 1;
+                    double rp = readPos; while (rp < 0) rp += pbSize; while (rp >= pbSize) rp -= pbSize;
+                    int i0 = (int)rp; float fr = (float)(rp - i0); int i1 = (i0 + 1) % pbSize;
+                    float w = std::min(1.f, fxT / 64.f);
+                    bl = (pbL[i0] + (pbL[i1] - pbL[i0]) * fr) * w + L * (1.f - w);
+                    br = (pbR[i0] + (pbR[i1] - pbR[i0]) * fr) * w + R * (1.f - w);
                 } else { // tape stop
                     readPos += tapeRate;
                     tapeRate = std::max(0.f, tapeRate - 1.f / (0.9f * sr));
@@ -377,13 +469,21 @@ void Engine::process(float *out, int frames) {
                 flutPh += 6.3f / sr; if (flutPh >= 1.f) flutPh -= 1.f;
                 float d = 0.006f * sr * (1.f + 0.45f * std::sin(kTwoPi * wowPh) + 0.08f * std::sin(kTwoPi * flutPh));
                 float rp = (float)ww - d; if (rp < 0) rp += 4096.f;
-                int i0 = (int)rp; float fr = rp - i0; int i1 = (i0 + 1) & 4095;
+                int i0 = (int)rp & 4095; float fr = rp - std::floor(rp); int i1 = (i0 + 1) & 4095;
                 float wl = lofiL.lp(softclip((wowL[i0] + (wowL[i1] - wowL[i0]) * fr) * 1.3f)) + rng.next() * 0.003f;
                 float wr = lofiR.lp(softclip((wowR[i0] + (wowR[i1] - wowR[i0]) * fr) * 1.3f)) + rng.next() * 0.003f;
                 L += (wl - L) * mixLofi; R += (wr - R) * mixLofi;
             }
             ww = (ww + 1) & 4095;
 
+            // ---- kill EQ (3-band isolator)
+            gLow += clampf((fKL ? 0.f : 1.f) - gLow, -ramp, ramp);
+            gMid += clampf((fKM ? 0.f : 1.f) - gMid, -ramp, ramp);
+            gHigh += clampf((fKH ? 0.f : 1.f) - gHigh, -ramp, ramp);
+            if (gLow < 1.f || gMid < 1.f || gHigh < 1.f) {
+                float lo = kLoL.lp(L), hi = kHiL.hp(L); L = lo * gLow + (L - lo - hi) * gMid + hi * gHigh;
+                lo = kLoR.lp(R); hi = kHiR.hp(R); R = lo * gLow + (R - lo - hi) * gMid + hi * gHigh;
+            } else { kLoL.lp(L); kHiL.hp(L); kLoR.lp(R); kHiR.hp(R); }
             // ---- DJ filter
             mixFilter += clampf((fFilter ? 1.f : 0.f) - mixFilter, -ramp, ramp);
             {
@@ -391,6 +491,27 @@ void Engine::process(float *out, int frames) {
                 pfL.proc(L, a, b, c); float fl = filterHP ? c : a;
                 pfR.proc(R, a, b, c); float fr = filterHP ? c : a;
                 if (mixFilter > 0.f) { L += (fl - L) * mixFilter; R += (fr - R) * mixFilter; }
+            }
+            // ---- flanger
+            mixFlange += clampf((fFl ? 1.f : 0.f) - mixFlange, -ramp, ramp);
+            {
+                flPh += 0.25f / sr; if (flPh >= 1.f) flPh -= 1.f;
+                float d = (0.0005f + 0.0055f * (0.5f + 0.5f * std::sin(kTwoPi * flPh))) * sr;
+                float rp = (float)flW - d; if (rp < 0) rp += 2048.f;
+                int i0 = (int)rp & 2047; float fr = rp - std::floor(rp); int i1 = (i0 + 1) & 2047;
+                float yl = flL[i0] + (flL[i1] - flL[i0]) * fr, yr = flR[i0] + (flR[i1] - flR[i0]) * fr;
+                flL[flW] = L + yl * 0.65f * mixFlange; flR[flW] = R + yr * 0.65f * mixFlange; flW = (flW + 1) & 2047;
+                if (mixFlange > 0.f) { L += ((L + yl) * 0.7f - L) * mixFlange; R += ((R + yr) * 0.7f - R) * mixFlange; }
+            }
+            // ---- ring mod
+            mixRing += clampf((fRing ? 1.f : 0.f) - mixRing, -ramp, ramp);
+            ringPh += 330.f / sr; if (ringPh >= 1.f) ringPh -= 1.f;
+            if (mixRing > 0.f) { float c = std::sin(kTwoPi * ringPh); L += (L * c - L) * mixRing; R += (R * c - R) * mixRing; }
+            // ---- distortion
+            mixDist += clampf((fDist ? 1.f : 0.f) - mixDist, -ramp, ramp);
+            if (mixDist > 0.f) {
+                float dl = distL.lp(softclip(L * 6.f) * 0.5f), dr = distR.lp(softclip(R * 6.f) * 0.5f);
+                L += (dl - L) * mixDist; R += (dr - R) * mixDist;
             }
             // ---- bit crush
             mixCrush += clampf((fCrush ? 1.f : 0.f) - mixCrush, -ramp, ramp);
@@ -405,6 +526,21 @@ void Engine::process(float *out, int frames) {
                 float ph = (float)(gatePh - std::floor(gatePh));
                 gateS += ((ph < 0.5f ? 1.f : 0.f) - gateS) * 0.02f;
                 if (mixGate > 0.f) { float g = 1.f - mixGate * (1.f - gateS); L *= g; R *= g; }
+            }
+            // ---- sidechain-style pump (quarter notes)
+            mixPump += clampf((fPump ? 1.f : 0.f) - mixPump, -ramp, ramp);
+            if (mixPump > 0.f) {
+                double q = gatePh / 4.0; float ph = (float)(q - std::floor(q));
+                float e = std::min(1.f, ph / 0.55f); e = 0.08f + 0.92f * e * e;
+                float g = 1.f - mixPump * (1.f - e); L *= g; R *= g;
+            }
+            // ---- mono / wide
+            mixMono += clampf((fMono ? 1.f : 0.f) - mixMono, -ramp, ramp);
+            mixWide += clampf((fWide ? 1.f : 0.f) - mixWide, -ramp, ramp);
+            if (mixMono > 0.f || mixWide > 0.f) {
+                float mid = (L + R) * 0.5f, side = (L - R) * 0.5f;
+                side *= (1.f - mixMono) * (1.f + mixWide);
+                L = mid + side; R = mid - side;
             }
             // ---- compressor
             {

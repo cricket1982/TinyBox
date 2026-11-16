@@ -21,6 +21,8 @@ object Native {
     @JvmStatic external fun setMute(track: Int, mute: Boolean)
     @JvmStatic external fun setSolo(track: Int, solo: Boolean)
     @JvmStatic external fun setFx(id: Int, on: Boolean)
+    @JvmStatic external fun setLfo(i: Int, wave: Int, rate: Float, sync: Boolean, retrig: Boolean)
+    @JvmStatic external fun setLfoDest(i: Int, slot: Int, dest: Int, depth: Float)
     @JvmStatic external fun setFxXY(x: Float, y: Float)
     @JvmStatic external fun setMachine(track: Int, machine: Int)
     @JvmStatic external fun setSong(patterns: IntArray, repeats: IntArray)
@@ -40,7 +42,7 @@ object Native {
     @JvmStatic external fun setSlices(track: Int, starts: IntArray)
 
     /** [0]=playing [1]=pattern [2..9]=step per track [10..17]=trigger counters [18]=peak*1000
-     *  [19..26]=track peaks*1000 [27]=song row [28]=song repeat [29]=compressor GR dB*100 */
+     *  [19..26]=track peaks*1000 [27]=song row [28]=song repeat [29]=compressor GR dB*100 [30..33]=LFO values*1000 */
     @JvmStatic external fun status(out: IntArray)
     @JvmStatic external fun relPos(): Double
 }

@@ -88,6 +88,24 @@ object Defs {
     val masterParams = listOf("DlyTime", "DlyFdbk", "DlyTone", "DlyLvl", "RevSize", "RevDamp", "RevLvl", "Drive", "Volume",
         "CmpThr", "CmpRatio", "CmpAtk", "CmpRel", "CmpGain", "CmpMix")
     val masterDefaults = listOf(.3f, .4f, .6f, .6f, .6f, .4f, .6f, 0f, .8f, .7f, .45f, .6f, .5f, 0f, 0f)
+    val lfoWaves = listOf("Sine", "Triangle", "Saw up", "Saw down", "Square", "S&H", "Random")
+    val lfoDivs = listOf("1/32", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars")
+    fun lfoRate(sync: Boolean, v: Float): String =
+        if (sync) lfoDivs[(v * 8.99f).toInt().coerceIn(0, 8)]
+        else { val hz = 0.02 * Math.pow(1000.0, v.toDouble()); if (hz < 1) String.format("%.2fHz", hz) else String.format("%.1fHz", hz) }
+
+    /** performance FX library: engine id -> pad label (\n = line break). 11 is the XY filter. */
+    val fxLib: List<Pair<Int, String>> = listOf(
+        0 to "REPEAT\n1/4", 1 to "REPEAT\n1/8", 2 to "REPEAT\n1/16", 3 to "REPEAT\n1/32", 12 to "REPEAT\n1/8T", 13 to "REPEAT\n1/16T",
+        14 to "GLITCH", 4 to "REVERSE", 5 to "TAPE\nSTOP", 15 to "HALF\nSPEED", 6 to "GATE\n1/16", 16 to "PUMP\n1/4",
+        7 to "CRUSH", 22 to "DISTORT", 20 to "RING\nMOD", 21 to "FLANGER", 17 to "KILL\nLOW", 18 to "KILL\nMID", 19 to "KILL\nHIGH",
+        8 to "DUB\nTHROW", 9 to "FREEZE", 10 to "LO-FI", 23 to "MONO", 24 to "WIDE")
+    fun fxName(id: Int) = fxLib.firstOrNull { it.first == id }?.second ?: ""
+    fun fxColor(id: Int): Int = when (id) {
+        0, 1, 2, 3, 12, 13, 14 -> 0xFFFF6B5A.toInt(); 4, 5, 15 -> 0xFFFFA94D.toInt(); 6, 16 -> 0xFFF5E663.toInt()
+        7, 22, 20 -> 0xFF6FE07A.toInt(); 21, 17, 18, 19 -> 0xFF4FD6C8.toInt(); 8, 9 -> 0xFF5AA9FF.toInt(); else -> 0xFFA884FF.toInt()
+    }
+    val defaultFxSlots = intArrayOf(0, 1, 2, 4, 5, 14, 6, 16, 7, 8, 9, 17)
     val vowels = listOf("A", "E", "I", "O", "U")
     fun vowelName(v: Float) = vowels[(v * 4f + .5f).toInt().coerceIn(0, 4)]
 
@@ -186,6 +204,12 @@ class TrackData {
     }
 }
 
+class LfoData {
+    var wave = 0; var rate = .4f; var sync = true; var retrig = false
+    val dest = IntArray(3) { -1 }
+    val depth = FloatArray(3)
+}
+
 class Project {
     var name = "untitled"
     var bpm = 120f
@@ -197,6 +221,19 @@ class Project {
     val songRep = ArrayList<Int>()
     var songMode = false
     var songLoop = true
+    val lfos = Array(4) { LfoData() }
+    val fxSlots = Defs.defaultFxSlots.copyOf()
+
+    fun pushLfo(k: Int) {
+        val l = lfos[k]
+        Native.setLfo(k, l.wave, l.rate, l.sync, l.retrig)
+        for (d in 0 until 3) Native.setLfoDest(k, d, l.dest[d], l.depth[d])
+    }
+    fun destName(d: Int): String = when {
+        d < 0 -> "— none —"
+        d < 1000 -> { val t = d / 16; val i = d % 16; "T${t + 1} ${Defs.paramName(tracks[t].machine, i)}" }
+        else -> "Master ${Defs.masterParams.getOrElse(d - 1000) { "?" }}"
+    }
 
     // ---------------- engine sync
     fun pushStep(p: Int, t: Int, i: Int) {
@@ -233,6 +270,7 @@ class Project {
         for (t in 0 until TRACKS) pushTrack(t, true)
         for (p in 0 until PATTERNS) pushPattern(p)
         pushSong()
+        for (k in 0 until 4) pushLfo(k)
     }
 
     // ---------------- JSON
@@ -279,6 +317,15 @@ class Project {
         val sa = JSONArray()
         for (k in songPat.indices) sa.put(JSONArray(listOf(songPat[k], songRep[k])))
         o.put("song", sa); o.put("songMode", songMode); o.put("songLoop", songLoop)
+        val la = JSONArray()
+        for (l in lfos) {
+            val j = JSONObject()
+            j.put("wave", l.wave); j.put("rate", l.rate.toDouble()); j.put("sync", l.sync); j.put("retrig", l.retrig)
+            j.put("dest", JSONArray(l.dest.toList())); j.put("depth", JSONArray(l.depth.map { it.toDouble() }))
+            la.put(j)
+        }
+        o.put("lfos", la)
+        o.put("fxSlots", JSONArray(fxSlots.toList()))
         return o
     }
 
@@ -335,6 +382,16 @@ class Project {
             }
             pr.songMode = o.optBoolean("songMode", false)
             pr.songLoop = o.optBoolean("songLoop", true)
+            o.optJSONArray("lfos")?.let { la ->
+                for (k in 0 until minOf(4, la.length())) {
+                    val j = la.getJSONObject(k); val l = pr.lfos[k]
+                    l.wave = j.optInt("wave", 0).coerceIn(0, 6); l.rate = j.optDouble("rate", .4).toFloat()
+                    l.sync = j.optBoolean("sync", true); l.retrig = j.optBoolean("retrig", false)
+                    j.optJSONArray("dest")?.let { a -> for (d in 0 until minOf(3, a.length())) l.dest[d] = a.getInt(d) }
+                    j.optJSONArray("depth")?.let { a -> for (d in 0 until minOf(3, a.length())) l.depth[d] = a.getDouble(d).toFloat() }
+                }
+            }
+            o.optJSONArray("fxSlots")?.let { a -> for (i in 0 until minOf(12, a.length())) pr.fxSlots[i] = a.getInt(i) }
             return pr
         }
 

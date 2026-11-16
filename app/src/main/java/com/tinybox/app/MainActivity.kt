@@ -134,6 +134,39 @@ class MainActivity : Activity() {
             }.setNegativeButton("Cancel", null).show()
     }
 
+    fun menu(items: List<Pair<String, () -> Unit>>) {
+        AlertDialog.Builder(this).setTitle("TinyBox")
+            .setItems(items.map { it.first }.toTypedArray()) { _, w -> items[w].second() }
+            .setNegativeButton("Close", null).show()
+    }
+
+    /** two-step picker: track / master, then the parameter */
+    fun chooseLfoDest(k: Int, slot: Int, done: () -> Unit) {
+        val groups = listOf("— none —") + (0 until TRACKS).map { "Track ${it + 1} · ${Defs.machines[project.tracks[it].machine].name}" } + listOf("Master")
+        AlertDialog.Builder(this).setTitle("LFO ${k + 1} → destination ${slot + 1}")
+            .setItems(groups.toTypedArray()) { _, g ->
+                val l = project.lfos[k]
+                if (g == 0) { l.dest[slot] = -1; project.pushLfo(k); done(); return@setItems }
+                val opts: List<Pair<Int, String>> = if (g <= TRACKS) {
+                    val t = g - 1
+                    (0 until TRACK_PARAMS).map { i -> (t * 16 + i) to Defs.paramName(project.tracks[t].machine, i) }.filter { it.second.isNotEmpty() }
+                } else Defs.masterParams.indices.map { i -> (1000 + i) to Defs.masterParams[i] }
+                AlertDialog.Builder(this).setTitle(groups[g])
+                    .setItems(opts.map { it.second }.toTypedArray()) { _, w ->
+                        l.dest[slot] = opts[w].first
+                        if (l.depth[slot] == 0f) l.depth[slot] = .5f
+                        project.pushLfo(k); done()
+                    }.setNegativeButton("Cancel", null).show()
+            }.setNegativeButton("Cancel", null).show()
+    }
+
+    fun chooseFxSlot(slot: Int, done: (Int) -> Unit) {
+        val opts = listOf(-1 to "— empty —") + Defs.fxLib
+        AlertDialog.Builder(this).setTitle("FX pad ${slot + 1}")
+            .setItems(opts.map { it.second.replace("\n", " ") }.toTypedArray()) { _, w -> done(opts[w].first) }
+            .setNegativeButton("Cancel", null).show()
+    }
+
     fun editBpm() {
         val et = EditText(this).apply { setText(project.bpm.toString()); inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_FLAG_DECIMAL; setSelectAllOnFocus(true) }
         AlertDialog.Builder(this).setTitle("Tempo (BPM)").setView(et)

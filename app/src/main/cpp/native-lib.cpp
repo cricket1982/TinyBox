@@ -111,6 +111,16 @@ JFN(void, setSongMode)(JNIEnv *, jclass, jboolean on, jboolean loop, jint startR
     if (!gEngine) return;
     gEngine->songMode.store(on); gEngine->songLoop.store(loop); gEngine->songStart.store(startRow);
 }
+JFN(void, setLfo)(JNIEnv *, jclass, jint i, jint wave, jfloat rate, jboolean sync, jboolean retrig) {
+    if (!gEngine || i < 0 || i >= kLfos) return;
+    Lfo &L = gEngine->lfos[i];
+    L.wave = std::clamp(wave, 0, 6); L.rate = clampf(rate, 0.f, 1.f); L.sync = sync; L.retrig = retrig;
+}
+JFN(void, setLfoDest)(JNIEnv *, jclass, jint i, jint slot, jint dest, jfloat depth) {
+    if (!gEngine || i < 0 || i >= kLfos || slot < 0 || slot > 2) return;
+    Lfo &L = gEngine->lfos[i];
+    L.depth[slot] = 0.f; L.dest[slot] = dest; L.depth[slot] = clampf(depth, -1.f, 1.f);
+}
 JFN(void, setFx)(JNIEnv *, jclass, jint id, jboolean on) { if (gEngine && id >= 0 && id < FX_COUNT) gEngine->fxOn[id].store(on); }
 JFN(void, setFxXY)(JNIEnv *, jclass, jfloat x, jfloat y) { if (gEngine) { gEngine->fxX.store(clampf(x, 0.f, 1.f)); gEngine->fxY.store(clampf(y, 0.f, 1.f)); } }
 JFN(void, setMachine)(JNIEnv *, jclass, jint t, jint m) {
@@ -162,10 +172,10 @@ JFN(void, setSlices)(JNIEnv *env, jclass, jint t, jintArray starts) {
 }
 
 // status: [0]=playing [1]=pattern [2..9]=current step per track [10..17]=trigger counters [18]=peak*1000
-//         [19..26]=track peaks*1000 [27]=song row [28]=song repeat [29]=compressor GR (dB*100)
+//         [19..26]=track peaks*1000 [27]=song row [28]=song repeat [29]=compressor GR (dB*100) [30..33]=LFO values*1000
 JFN(void, status)(JNIEnv *env, jclass, jintArray out) {
     if (!gEngine) return;
-    jint s[30];
+    jint s[34];
     s[0] = gEngine->playing.load() ? 1 : 0;
     s[1] = gEngine->curPattern.load();
     for (int t = 0; t < kTracks; ++t) {
@@ -176,6 +186,7 @@ JFN(void, status)(JNIEnv *env, jclass, jintArray out) {
     for (int t = 0; t < kTracks; ++t) s[19 + t] = (jint)(gEngine->tracks[t].peak.load() * 1000.f);
     s[27] = gEngine->songRow.load(); s[28] = gEngine->songRepeat.load();
     s[29] = (jint)(gEngine->compGR.load() * 100.f);
-    env->SetIntArrayRegion(out, 0, std::min(30, (int)env->GetArrayLength(out)), s);
+    for (int k = 0; k < kLfos; ++k) s[30 + k] = (jint)(gEngine->lfoVal[k].load() * 1000.f);
+    env->SetIntArrayRegion(out, 0, std::min(34, (int)env->GetArrayLength(out)), s);
 }
 JFN(jdouble, relPos)(JNIEnv *, jclass) { return gEngine ? gEngine->relPos.load() : 0.0; }

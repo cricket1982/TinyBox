@@ -28,16 +28,18 @@ class GrooveView(private val app: MainActivity) : View(app) {
     var fillHeld = false
     var octave = 3              // keyboard base = C(octave)
     var curPattern = 0          // pattern shown/edited
-    var pageMode = 0            // 0 = SEQ, 1 = MIX, 2 = SONG, 3 = FX
+    var pageMode = 0            // 0 = SEQ, 1 = MIX, 2 = SONG, 3 = FX, 4 = PADS, 5 = MOD
+    var sliceBank = 0           // which 16 slices the slice pads show
+    var fxEdit = false
     var sliceEdit = false
     var zoom = 1
     var viewStart = 0
     var fxLatch = false
-    val fxState = BooleanArray(12)
+    val fxState = BooleanArray(32)
     var fxX = .5f; var fxY = .2f
     var songSel = 0             // selected song row
     private var clipboard: PatternData? = null
-    private val status = IntArray(30)
+    private val status = IntArray(34)
     private val lastTrig = IntArray(TRACKS)
     private val flash = LongArray(TRACKS)
     private var playing = false
@@ -83,11 +85,10 @@ class GrooveView(private val app: MainActivity) : View(app) {
         // top bar
         topBtns.clear()
         val spec = listOf(
-            "PLAY" to 9f, "BPM" to 9.5f, "SWING" to 8.5f, "|" to 1.2f,
-            "SEQ" to 5.5f, "MIX" to 5.5f, "SONG" to 6.5f, "FX" to 5f, "|" to 1.2f,
-            "A" to 4.3f, "B" to 4.3f, "C" to 4.3f, "D" to 4.3f, "E" to 4.3f, "F" to 4.3f, "G" to 4.3f, "H" to 4.3f, "|" to 1.2f,
-            "FILL" to 6f, "REC" to 6.5f, "|" to 1.2f, "COPY" to 6.5f, "PASTE" to 6.5f, "CLR" to 5.5f, "|" to 1.2f,
-            "SAVE" to 6f, "LOAD" to 6f, "NEW" to 5.5f
+            "PLAY" to 9f, "BPM" to 9.5f, "SWING" to 8.5f, "|" to 1.5f,
+            "SEQ" to 6f, "PADS" to 6f, "MIX" to 6f, "SONG" to 6.5f, "FX" to 5.5f, "MOD" to 6f, "|" to 1.5f,
+            "A" to 4.5f, "B" to 4.5f, "C" to 4.5f, "D" to 4.5f, "E" to 4.5f, "F" to 4.5f, "G" to 4.5f, "H" to 4.5f, "|" to 1.5f,
+            "FILL" to 6.5f, "REC" to 7f, "|" to 1.5f, "MENU" to 7f
         )
         val total = spec.sumOf { it.second.toDouble() }.toFloat()
         val scale = (w - 2 * u) / total
@@ -164,13 +165,59 @@ class GrooveView(private val app: MainActivity) : View(app) {
         // FX page
         fxLatchBtn.set(x0, 9.5f * u, x0 + 12f * u, 14f * u)
         fxClearBtn.set(x0 + 13f * u, 9.5f * u, x0 + 25f * u, 14f * u)
-        val xyW = (x1 - x0) * .42f
+        fxEditBtn.set(x0 + 26f * u, 9.5f * u, x0 + 38f * u, 14f * u)
+        val xyW = (x1 - x0) * .38f
         fxXY.set(x0, 15.5f * u, x0 + xyW, h - u)
         val gx0 = x0 + xyW + 1.5f * u
         val pw2 = (x1 - gx0) / 4f; val ph2 = (h - u - 15.5f * u) / 3f
-        for (i in 0 until 11) {
+        for (i in 0 until 12) {
             val c = i % 4; val r = i / 4
             fxPads[i].set(gx0 + c * pw2 + .4f * u, 15.5f * u + r * ph2 + .4f * u, gx0 + (c + 1) * pw2 - .4f * u, 15.5f * u + (r + 1) * ph2 - .4f * u)
+        }
+        // PADS page
+        padsArea.set(x0, 9.5f * u, x1, h - u)
+        val bpw = (x1 - x0) / 4f; val bph = (h - u - 9.5f * u) / 2f
+        for (t in 0 until TRACKS) {
+            val c = t % 4; val r = t / 4
+            bigPads[t].set(x0 + c * bpw + .5f * u, 9.5f * u + r * bph + .5f * u, x0 + (c + 1) * bpw - .5f * u, 9.5f * u + (r + 1) * bph - .5f * u)
+        }
+        bigOctDown.set(x0, 9.5f * u, x0 + 9f * u, (9.5f + (h / u - 10.5f) / 2f) * u - .4f * u)
+        bigOctUp.set(x0, bigOctDown.bottom + .8f * u, x0 + 9f * u, h - u)
+        bigKeys.set(x0 + 10f * u, 9.5f * u, x1, h - u)
+        // slicer page: toolbar, waveform, banks + 4x4 pads
+        for ((i, pr) in slicerBtns.withIndex()) { val bw3 = 8.5f * u; pr.second.set(x0 + i * (bw3 + .6f * u), 9.5f * u, x0 + i * (bw3 + .6f * u) + bw3, 14f * u) }
+        waveRect.set(x0, 15f * u, x1, 38f * u)
+        val bankH = (h - u - 39.5f * u) / 4f
+        for (i in 0 until 4) pageBank[i].set(x0, 39.5f * u + i * bankH + .3f * u, x0 + 9f * u, 39.5f * u + (i + 1) * bankH - .3f * u)
+        val spw = (x1 - x0 - 10f * u) / 4f; val sph = (h - u - 39.5f * u) / 4f
+        for (i in 0 until 16) {
+            val c = i % 4; val r = i / 4
+            pagePads[i].set(x0 + 10f * u + c * spw + .4f * u, 39.5f * u + r * sph + .4f * u, x0 + 10f * u + (c + 1) * spw - .4f * u, 39.5f * u + (r + 1) * sph - .4f * u)
+        }
+        // granular page
+        grainLoad.set(x0, 9.5f * u, x0 + 9f * u, 14f * u)
+        grainWave.set(x0 + 10f * u, 9.5f * u, x1, 32f * u)
+        grainOctDown.set(x0, 33.5f * u, x0 + 9f * u, 33.5f * u + (h - u - 33.5f * u) / 2f - .4f * u)
+        grainOctUp.set(x0, grainOctDown.bottom + .8f * u, x0 + 9f * u, h - u)
+        grainKeys.set(x0 + 10f * u, 33.5f * u, x1, h - u)
+        // SEQ strip for slicer: 4 bank buttons + 16 pads
+        val sbh = (perf.height()) / 4f
+        for (i in 0 until 4) stripBank[i].set(x0, perf.top + i * sbh + .2f * u, x0 + 8f * u, perf.top + (i + 1) * sbh - .2f * u)
+        val stw2 = (x1 - x0 - 9f * u) / 16f
+        for (i in 0 until 16) stripPads[i].set(x0 + 9f * u + i * stw2 + .25f * u, perf.top, x0 + 9f * u + (i + 1) * stw2 - .25f * u, perf.bottom)
+        // MOD page: one column per LFO
+        val lw = (x1 - x0) / 4f
+        for (k in 0 until 4) {
+            val l = x0 + k * lw + .5f * u; val r = x0 + (k + 1) * lw - .5f * u; val cx = (l + r) / 2
+            lfoCol[k].set(l, 9.5f * u, r, h - u)
+            lfoWave[k].set(l + .6f * u, 16f * u, r - .6f * u, 21f * u)
+            lfoRate[k].set(l, 22f * u, cx, 35f * u)
+            lfoSync[k].set(cx + .5f * u, 23f * u, r - .6f * u, 28f * u)
+            lfoRetrig[k].set(cx + .5f * u, 29.5f * u, r - .6f * u, 34.5f * u)
+            for (d in 0 until 3) {
+                lfoDest[k][d].set(l + .6f * u, (37f + d * 20f) * u, r - .6f * u, (42f + d * 20f) * u)
+                lfoDepth[k][d].set(l, (42.5f + d * 20f) * u, r, (56f + d * 20f) * u)
+            }
         }
         val colW = (x1 - x0) / 4f; val rowH = (h - u - 16f * u) / 16f
         for (k in 0 until 64) {
@@ -190,10 +237,22 @@ class GrooveView(private val app: MainActivity) : View(app) {
     private val songBtns = ArrayList<Pair<String, RectF>>()
     private val songHint = RectF()
     private val songCells = Array(64) { RectF() }
-    private val fxXY = RectF(); private val fxLatchBtn = RectF(); private val fxClearBtn = RectF()
-    private val fxPads = Array(11) { RectF() }
-    private val fxNames = listOf("REPEAT\n1/4", "REPEAT\n1/8", "REPEAT\n1/16", "REPEAT\n1/32", "REVERSE", "TAPE\nSTOP",
-        "GATE\n1/16", "CRUSH", "DUB\nTHROW", "FREEZE", "LO-FI")
+    private val fxXY = RectF(); private val fxLatchBtn = RectF(); private val fxClearBtn = RectF(); private val fxEditBtn = RectF()
+    private val fxPads = Array(12) { RectF() }
+    private val padsArea = RectF()
+    private val bigPads = Array(TRACKS) { RectF() }
+    private val bigOctDown = RectF(); private val bigOctUp = RectF(); private val bigKeys = RectF()
+    private val pageBank = Array(4) { RectF() }; private val pagePads = Array(16) { RectF() }
+    private val stripBank = Array(4) { RectF() }; private val stripPads = Array(16) { RectF() }
+    private val lfoCol = Array(4) { RectF() }; private val lfoWave = Array(4) { RectF() }; private val lfoRate = Array(4) { RectF() }
+    private val lfoSync = Array(4) { RectF() }; private val lfoRetrig = Array(4) { RectF() }
+    private val lfoDest = Array(4) { Array(3) { RectF() } }; private val lfoDepth = Array(4) { Array(3) { RectF() } }
+    private fun onPadsPage() = pageMode == 4
+    private fun padRect(t: Int) = if (onPadsPage()) bigPads[t] else pads[t]
+    private fun octDownR() = if (onPadsPage()) (if (def.kind == Kind.GRAIN) grainOctDown else bigOctDown) else octDown
+    private fun octUpR() = if (onPadsPage()) (if (def.kind == Kind.GRAIN) grainOctUp else bigOctUp) else octUp
+    private fun bankR(i: Int) = if (onPadsPage()) pageBank[i] else stripBank[i]
+    private fun slicePadR(i: Int) = if (onPadsPage()) pagePads[i] else stripPads[i]
 
     // ---------------------------------------------------------------- helpers
     private val tr get() = proj.tracks[selTrack]
@@ -243,6 +302,8 @@ class GrooveView(private val app: MainActivity) : View(app) {
             1 -> drawMixer(c)
             2 -> drawSong(c)
             3 -> drawFx(c)
+            4 -> drawPerf(c)
+            5 -> drawMod(c)
             else -> { drawGridHeader(c); drawSteps(c); drawStepEditor(c); drawSoundKnobs(c); drawPerf(c) }
         }
     }
@@ -256,6 +317,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
             "MIX" -> drawBtn(c, r, "MIX", pageMode == 1, onCol = 0xFFDADDE3.toInt())
             "SONG" -> drawBtn(c, r, if (proj.songMode) "SONG ●" else "SONG", pageMode == 2, onCol = 0xFFDADDE3.toInt())
             "FX" -> drawBtn(c, r, if (fxState.any { it }) "FX ●" else "FX", pageMode == 3, onCol = 0xFFDADDE3.toInt())
+            "PADS" -> drawBtn(c, r, "PADS", pageMode == 4, onCol = 0xFFDADDE3.toInt())
+            "MOD" -> drawBtn(c, r, if (proj.lfos.any { l -> l.dest.indices.any { l.dest[it] >= 0 && l.depth[it] != 0f } }) "MOD ●" else "MOD", pageMode == 5, onCol = 0xFFDADDE3.toInt())
+            "MENU" -> drawBtn(c, r, "☰ MENU")
             "FILL" -> drawBtn(c, r, "FILL", fillHeld, onCol = lockCol)
             "REC" -> drawBtn(c, r, "● REC", rec, onCol = 0xFFFF5050.toInt())
             "A", "B", "C", "D", "E", "F", "G", "H" -> {
@@ -457,24 +521,26 @@ class GrooveView(private val app: MainActivity) : View(app) {
 
     private fun drawPerf(c: Canvas) {
         if (showMaster || def.kind == Kind.DRUM) {
+            val big = onPadsPage()
             for (t in 0 until TRACKS) {
-                val r = pads[t]
+                val r = padRect(t)
                 val age = SystemClock.uptimeMillis() - flash[t]
                 fill.color = trackCol[t]; fill.alpha = if (age < 100) 255 else 70
                 c.drawRoundRect(r, 1.2f * u, 1.2f * u, fill); fill.alpha = 255
-                text.textSize = 2.3f * u; text.color = textCol
-                c.drawText("${t + 1}", r.centerX(), r.top + 4f * u, text)
-                text.textSize = 1.9f * u
-                c.drawText(Defs.machines[proj.tracks[t].machine].short, r.centerX(), r.top + 7f * u, text)
+                text.textSize = (if (big) 3.2f else 2.3f) * u; text.color = textCol
+                c.drawText("${t + 1}", r.centerX(), r.top + (if (big) 5f else 4f) * u, text)
+                text.textSize = (if (big) 2.4f else 1.9f) * u
+                c.drawText(if (big) Defs.machines[proj.tracks[t].machine].name else Defs.machines[proj.tracks[t].machine].short, r.centerX(), r.top + (if (big) 9f else 7f) * u, text)
             }
             return
         }
-        if (def.kind == Kind.SYNTH) {
-            drawBtn(c, octDown, "OCT −", ts = 2f)
-            drawBtn(c, octUp, "OCT +", ts = 2f)
+        if (def.kind == Kind.SYNTH || (def.kind == Kind.GRAIN && !onPadsPage())) {
+            drawBtn(c, octDownR(), "OCT −", ts = 2f)
+            drawBtn(c, octUpR(), "OCT +", ts = 2f)
             drawKeys(c)
             return
         }
+        if (def.kind == Kind.SLICER && !onPadsPage()) { drawSlicePads(c); return }
         if (def.kind == Kind.GRAIN) {
             drawBtn(c, grainLoad, "LOAD", ts = 2f)
             drawBtn(c, grainOctDown, "OCT −", ts = 2f)
@@ -559,6 +625,30 @@ class GrooveView(private val app: MainActivity) : View(app) {
             val tx = waveRect.left + waveRect.width() * viewStart / frames
             fill.color = dim; c.drawRect(tx, waveRect.bottom - .5f * u, tx + tw, waveRect.bottom, fill)
         }
+        drawSlicePads(c)
+    }
+
+    /** MPC-style slice pads (4x4 on the PADS page, a row of 16 on SEQ) + bank buttons */
+    private fun drawSlicePads(c: Canvas) {
+        val n = tr.slices.size
+        val banks = max(1, (n + 15) / 16)
+        if (sliceBank >= banks) sliceBank = 0
+        for (i in 0 until 4) {
+            val has = i < banks
+            drawBtn(c, bankR(i), "${i * 16 + 1}-${i * 16 + 16}", i == sliceBank, if (has) panel2 else panel, onCol = trackCol[selTrack], ts = 1.8f)
+        }
+        val now = SystemClock.uptimeMillis()
+        val big = onPadsPage()
+        for (i in 0 until 16) {
+            val sIdx = sliceBank * 16 + i
+            val r = slicePadR(i)
+            val exists = sIdx < n && app.decoded[selTrack] != null
+            fill.color = if (exists) trackCol[selTrack] else 0xFF17181B.toInt()
+            fill.alpha = if (!exists) 255 else if (sIdx == activeSlice && now - activeSliceTime < 150) 255 else 80
+            c.drawRoundRect(r, u, u, fill); fill.alpha = 255
+            text.textSize = (if (big) 3f else 2f) * u; text.color = if (exists) textCol else dim
+            c.drawText("${sIdx + 1}", r.centerX(), r.centerY() + (if (big) 1f else .7f) * u, text)
+        }
     }
 
     private fun visFrames(d: Decoded) = max(64, d.frames / zoom)
@@ -584,8 +674,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
         drawBtn(c, fxLatchBtn, "LATCH", fxLatch, onCol = lockCol, ts = 2f)
         drawBtn(c, fxClearBtn, "ALL OFF", ts = 2f)
         text.textAlign = Paint.Align.LEFT; text.textSize = 1.9f * u; text.color = subText
-        c.drawText(if (fxLatch) "Latch on: tap to toggle effects" else "Hold a pad to apply it • turn on LATCH to make them stay on",
-            fxClearBtn.right + 2f * u, fxClearBtn.centerY() + .6f * u, text)
+        c.drawText(if (fxEdit) "EDIT: tap a pad to choose its effect (or leave it empty)"
+            else if (fxLatch) "Latch on: tap to toggle effects" else "Hold a pad to apply it • LATCH makes pads stay on",
+            fxEditBtn.right + 2f * u, fxEditBtn.centerY() + .6f * u, text)
         text.textAlign = Paint.Align.CENTER
         // XY filter
         val on = fxState[11]
@@ -603,14 +694,22 @@ class GrooveView(private val app: MainActivity) : View(app) {
             c.drawLine(px, fxXY.top, px, fxXY.bottom, stroke); c.drawLine(fxXY.left, py, fxXY.right, py, stroke)
             fill.color = 0xFF5AA9FF.toInt(); c.drawCircle(px, py, 2f * u, fill)
         }
-        val cols = intArrayOf(0xFFFF6B5A.toInt(), 0xFFFF6B5A.toInt(), 0xFFFF6B5A.toInt(), 0xFFFF6B5A.toInt(), 0xFFFFA94D.toInt(), 0xFFFFA94D.toInt(),
-            0xFFF5E663.toInt(), 0xFF6FE07A.toInt(), 0xFF4FD6C8.toInt(), 0xFF5AA9FF.toInt(), 0xFFA884FF.toInt())
-        for (i in 0 until 11) {
+        drawBtn(c, fxEditBtn, "EDIT", fxEdit, onCol = lockCol, ts = 2f)
+        for (i in 0 until 12) {
             val r = fxPads[i]
-            fill.color = cols[i]; fill.alpha = if (fxState[i]) 255 else 55
+            val id = proj.fxSlots[i]
+            if (id < 0) {
+                stroke.strokeWidth = 2f; stroke.color = dim; c.drawRoundRect(r, 1.2f * u, 1.2f * u, stroke)
+                text.textSize = 2f * u; text.color = dim
+                c.drawText(if (fxEdit) "+ add" else "empty", r.centerX(), r.centerY() + .7f * u, text)
+                continue
+            }
+            val on = fxState[id]
+            fill.color = Defs.fxColor(id); fill.alpha = if (on) 255 else 55
             c.drawRoundRect(r, 1.2f * u, 1.2f * u, fill); fill.alpha = 255
-            text.textSize = 2.3f * u; text.color = if (fxState[i]) Color.BLACK else textCol
-            val lines = fxNames[i].split("\n")
+            if (fxEdit) { stroke.strokeWidth = .4f * u; stroke.color = lockCol; c.drawRoundRect(r, 1.2f * u, 1.2f * u, stroke) }
+            text.textSize = 2.3f * u; text.color = if (on) Color.BLACK else textCol
+            val lines = Defs.fxName(id).split("\n")
             for ((k, ln) in lines.withIndex()) c.drawText(ln, r.centerX(), r.centerY() + (k - (lines.size - 1) / 2f) * 2.8f * u + .8f * u, text)
         }
     }
@@ -621,14 +720,14 @@ class GrooveView(private val app: MainActivity) : View(app) {
         fxY = ((fxXY.bottom - y) / fxXY.height()).coerceIn(0f, 1f)
         Native.setFxXY(fxX, fxY)
     }
-    fun releaseFx() { for (i in 0 until 12) if (fxState[i]) setFxOn(i, false) }
+    fun releaseFx() { for (i in 0 until 32) if (fxState[i]) setFxOn(i, false) }
 
     private var activeSlice = -1
     private var activeSliceTime = 0L
     private val heldKeys = HashSet<Int>()
 
     private fun whiteCount() = 15
-    private fun kRect() = if (!showMaster && def.kind == Kind.GRAIN) grainKeys else keysRect
+    private fun kRect() = if (onPadsPage()) (if (def.kind == Kind.GRAIN) grainKeys else bigKeys) else keysRect
     private fun drawKeys(c: Canvas) {
         val keysRect = kRect()
         val base = (octave + 1) * 12
@@ -687,6 +786,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
         object WaveEdit : Target()
         data class FxPad(val id: Int) : Target()
         object FxXY : Target()
+        data class LfoKnob(val k: Int, val which: Int) : Target()   // which 0 = rate, 1..3 = depth of destination 1..3
         object Bpm : Target()
         object Swing : Target()
     }
@@ -735,11 +835,14 @@ class GrooveView(private val app: MainActivity) : View(app) {
         }
         if (pageMode == 1) return hitMixer(x, y)
         if (pageMode == 2) return hitSong(x, y)
+        if (pageMode == 4) return hitPerf(x, y)
+        if (pageMode == 5) return hitMod(x, y)
         if (pageMode == 3) {
             if (fxLatchBtn.contains(x, y)) return Target.Btn("FXLATCH")
             if (fxClearBtn.contains(x, y)) return Target.Btn("FXCLEAR")
+            if (fxEditBtn.contains(x, y)) return Target.Btn("FXEDIT")
             if (fxXY.contains(x, y)) return Target.FxXY
-            for (i in 0 until 11) if (fxPads[i].contains(x, y)) return Target.FxPad(i)
+            for (i in 0 until 12) if (fxPads[i].contains(x, y)) return Target.FxPad(i)
             return null
         }
         for (i in 0 until 4) if (pageBtns[i].contains(x, y)) return Target.Btn("PAGE$i")
@@ -756,35 +859,45 @@ class GrooveView(private val app: MainActivity) : View(app) {
             if (!showMaster && Defs.paramName(tr.machine, i).isEmpty()) return null
             return Target.Knob(i)
         }
-        if (perf.contains(x, y)) {
-            if (showMaster || def.kind == Kind.DRUM) { for (t in 0 until TRACKS) if (pads[t].contains(x, y)) return Target.Pad(t); return null }
-            if (def.kind == Kind.SYNTH) {
-                if (octDown.contains(x, y)) return Target.Btn("OCT-")
-                if (octUp.contains(x, y)) return Target.Btn("OCT+")
-                val k = keyAt(x, y); if (k >= 0) return Target.Key(k, selTrack)
-                return null
+        if (perf.contains(x, y)) return hitPerf(x, y)
+        return null
+    }
+
+    private fun hitPerf(x: Float, y: Float): Target? {
+        if (showMaster || def.kind == Kind.DRUM) { for (t in 0 until TRACKS) if (padRect(t).contains(x, y)) return Target.Pad(t); return null }
+        if (def.kind == Kind.SYNTH || (def.kind == Kind.GRAIN && !onPadsPage())) {
+            if (octDownR().contains(x, y)) return Target.Btn("OCT-")
+            if (octUpR().contains(x, y)) return Target.Btn("OCT+")
+            val k = keyAt(x, y); if (k >= 0) return Target.Key(k, selTrack)
+            return null
+        }
+        if (def.kind == Kind.GRAIN) {
+            if (grainLoad.contains(x, y)) return Target.Btn("SLLOAD")
+            if (grainOctDown.contains(x, y)) return Target.Btn("OCT-")
+            if (grainOctUp.contains(x, y)) return Target.Btn("OCT+")
+            if (grainWave.contains(x, y)) return Target.Knob(0)
+            val k = keyAt(x, y); if (k >= 0) return Target.Key(k, selTrack)
+            return null
+        }
+        // slicer
+        for (i in 0 until 4) if (bankR(i).contains(x, y)) return Target.Btn("BANK$i")
+        for (i in 0 until 16) if (slicePadR(i).contains(x, y)) {
+            val sIdx = sliceBank * 16 + i
+            return if (sIdx < tr.slices.size && app.decoded[selTrack] != null) Target.Slice(sIdx) else null
+        }
+        if (!onPadsPage()) return null
+        for ((id, r) in slicerBtns) if (r.contains(x, y)) return Target.Btn("SL$id")
+        if (waveRect.contains(x, y)) {
+            app.decoded[selTrack] ?: return null
+            if (sliceEdit) {
+                var best = -1; var bd = 1.8f * u
+                for (k in tr.slices.indices) { val dx = abs(frameToX(tr.slices[k]) - x); if (dx < bd) { bd = dx; best = k } }
+                return if (best >= 0) Target.Marker(best) else Target.WaveEdit
             }
-            if (def.kind == Kind.GRAIN) {
-                if (grainLoad.contains(x, y)) return Target.Btn("SLLOAD")
-                if (grainOctDown.contains(x, y)) return Target.Btn("OCT-")
-                if (grainOctUp.contains(x, y)) return Target.Btn("OCT+")
-                if (grainWave.contains(x, y)) return Target.Knob(0)
-                val k = keyAt(x, y); if (k >= 0) return Target.Key(k, selTrack)
-                return null
-            }
-            for ((id, r) in slicerBtns) if (r.contains(x, y)) return Target.Btn("SL$id")
-            if (waveRect.contains(x, y)) {
-                app.decoded[selTrack] ?: return null
-                if (sliceEdit) {
-                    var best = -1; var bd = 1.8f * u
-                    for (k in tr.slices.indices) { val dx = abs(frameToX(tr.slices[k]) - x); if (dx < bd) { bd = dx; best = k } }
-                    return if (best >= 0) Target.Marker(best) else Target.WaveEdit
-                }
-                val pos = xToFrame(x)
-                var s = 0
-                for (k in tr.slices.indices) if (tr.slices[k] <= pos) s = k
-                return Target.Slice(s)
-            }
+            val pos = xToFrame(x)
+            var s = 0
+            for (k in tr.slices.indices) if (tr.slices[k] <= pos) s = k
+            return Target.Slice(s)
         }
         return null
     }
@@ -804,6 +917,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
                     is Target.Swing -> proj.swing
                     is Target.MixKnob -> mixGet(tg.strip, tg.k)
                     is Target.Marker -> tr.slices.getOrElse(tg.idx) { 0 }.toFloat()
+                    is Target.LfoKnob -> lfoKnobGet(tg.k, tg.which)
                     is Target.WaveEdit -> viewStart.toFloat()
                     is Target.Fader -> mixGet(tg.strip, 3)
                     is Target.SongCell -> if (tg.row < proj.songPat.size) (if (tg.right) proj.songRep[tg.row] else proj.songPat[tg.row]).toFloat() else 0f
@@ -843,7 +957,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
     private fun onDown(t: Touch, x: Float, y: Float) {
         when (val tg = t.target) {
             is Target.Pad -> {
-                val v = velFromY(y, pads[tg.track])
+                val v = velFromY(y, padRect(tg.track))
                 val note = padNote(tg.track)
                 Native.noteOn(tg.track, note, v)
                 recordHit(tg.track, note, v, t)
@@ -862,7 +976,11 @@ class GrooveView(private val app: MainActivity) : View(app) {
                 else recordHit(selTrack, tg.slice, .9f, t)
             }
             is Target.Btn -> if (tg.id == "FILL") { fillHeld = true; Native.setFill(true) }
-            is Target.FxPad -> if (fxLatch) setFxOn(tg.id, !fxState[tg.id]) else setFxOn(tg.id, true)
+            is Target.FxPad -> {
+                val id = proj.fxSlots[tg.id]
+                if (fxEdit) app.chooseFxSlot(tg.id) { nid -> if (id >= 0 && fxState[id]) setFxOn(id, false); proj.fxSlots[tg.id] = nid; invalidate() }
+                else if (id >= 0) { if (fxLatch) setFxOn(id, !fxState[id]) else setFxOn(id, true) }
+            }
             is Target.FxXY -> {
                 fxXYFrom(x, y)
                 if (fxLatch && fxState[11]) setFxOn(11, false) else setFxOn(11, true)
@@ -936,6 +1054,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
     private fun onDrag(t: Touch, dyUp: Float, dx: Float, x: Float, y: Float) {
         when (val tg = t.target) {
             is Target.FxXY -> fxXYFrom(x, y)
+            is Target.LfoKnob -> lfoKnobSet(tg.k, tg.which, t.start + dyUp / (30f * u))
             is Target.Marker -> {
                 val d = app.decoded[selTrack] ?: return
                 val sl = tr.slices
@@ -994,7 +1113,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
                 Native.noteOff(tg.track, padNote(tg.track))
             }
             is Target.Btn -> if (tg.id == "FILL") { fillHeld = false; Native.setFill(false) }
-            is Target.FxPad -> if (!fxLatch) setFxOn(tg.id, false)
+            is Target.FxPad -> { val id = proj.fxSlots[tg.id]; if (!fxLatch && !fxEdit && id >= 0) setFxOn(id, false) }
             is Target.FxXY -> if (!fxLatch) setFxOn(11, false)
             else -> {}
         }
@@ -1027,6 +1146,12 @@ class GrooveView(private val app: MainActivity) : View(app) {
                     val k = if (tg is Target.Fader) 3 else (tg as Target.MixKnob).k
                     mixSet(strip, k, mixDefault(strip, k)); lastTapKnob = -1
                 } else { lastTapKnob = key; lastTapTime = now }
+            }
+            is Target.LfoKnob -> {
+                val key = 3000 + tg.k * 4 + tg.which
+                val now = SystemClock.uptimeMillis()
+                if (lastTapKnob == key && now - lastTapTime < 350) { lfoKnobSet(tg.k, tg.which, if (tg.which == 0) .4f else .5f); lastTapKnob = -1 }
+                else { lastTapKnob = key; lastTapTime = now }
             }
             is Target.WaveEdit -> {
                 val f = xToFrame(t.x0)
@@ -1079,6 +1204,22 @@ class GrooveView(private val app: MainActivity) : View(app) {
             id == "FX" -> pageMode = 3
             id == "FXLATCH" -> { fxLatch = !fxLatch; if (!fxLatch) releaseFx() }
             id == "FXCLEAR" -> releaseFx()
+            id == "FXEDIT" -> { fxEdit = !fxEdit; if (fxEdit) releaseFx() }
+            id == "PADS" -> pageMode = 4
+            id == "MOD" -> pageMode = 5
+            id == "MENU" -> app.menu(listOf(
+                "Save project…" to { app.saveDialog() },
+                "Load project…" to { app.loadDialog() },
+                "New project…" to { app.newProject() },
+                "Copy pattern ${'A' + curPattern}" to { button("COPY") },
+                "Paste into pattern ${'A' + curPattern}" to { button("PASTE") },
+                "Clear track ${selTrack + 1} in pattern ${'A' + curPattern}" to { button("CLR") },
+                "Clear whole pattern ${'A' + curPattern}" to { clearPattern(); invalidate() }))
+            id.startsWith("BANK") -> { val b = id.substring(4).toInt(); if (b * 16 < tr.slices.size) sliceBank = b }
+            id.startsWith("LFOWAVE") -> { val k = id.substring(7).toInt(); proj.lfos[k].wave = (proj.lfos[k].wave + 1) % Defs.lfoWaves.size; proj.pushLfo(k) }
+            id.startsWith("LFOSYNC") -> { val k = id.substring(7).toInt(); proj.lfos[k].sync = !proj.lfos[k].sync; proj.pushLfo(k) }
+            id.startsWith("LFORETRIG") -> { val k = id.substring(9).toInt(); proj.lfos[k].retrig = !proj.lfos[k].retrig; proj.pushLfo(k) }
+            id.startsWith("LFODEST") -> { val k = id[7] - '0'; val d = id[8] - '0'; app.chooseLfoDest(k, d) { invalidate() } }
             id == "SEQ" -> pageMode = 0
             id == "MIX" -> pageMode = 1
             id == "SONG" -> pageMode = 2
@@ -1232,6 +1373,67 @@ class GrooveView(private val app: MainActivity) : View(app) {
             text.textSize = 2.2f * u; text.color = textCol
             val rep = if (k == playRow) "${status[28] + 1}/${proj.songRep[k]}" else "×${proj.songRep[k]}"
             c.drawText(rep, r.left + r.width() * .75f, r.centerY() + .8f * u, text)
+        }
+    }
+
+    // ---------------------------------------------------------------- MOD page (LFOs)
+    private fun lfoKnobGet(k: Int, which: Int): Float {
+        val l = proj.lfos[k]
+        return if (which == 0) l.rate else (l.depth[which - 1] + 1f) / 2f
+    }
+    private fun lfoKnobSet(k: Int, which: Int, v: Float) {
+        val l = proj.lfos[k]
+        val nv = v.coerceIn(0f, 1f)
+        if (which == 0) l.rate = nv
+        else { var d = nv * 2f - 1f; if (abs(d) < .02f) d = 0f; l.depth[which - 1] = d }
+        proj.pushLfo(k)
+    }
+    private fun hitMod(x: Float, y: Float): Target? {
+        for (k in 0 until 4) {
+            if (!lfoCol[k].contains(x, y)) continue
+            if (lfoWave[k].contains(x, y)) return Target.Btn("LFOWAVE$k")
+            if (lfoSync[k].contains(x, y)) return Target.Btn("LFOSYNC$k")
+            if (lfoRetrig[k].contains(x, y)) return Target.Btn("LFORETRIG$k")
+            if (lfoRate[k].contains(x, y)) return Target.LfoKnob(k, 0)
+            for (d in 0 until 3) {
+                if (lfoDest[k][d].contains(x, y)) return Target.Btn("LFODEST$k$d")
+                if (lfoDepth[k][d].contains(x, y)) return Target.LfoKnob(k, d + 1)
+            }
+        }
+        return null
+    }
+    private fun drawMod(c: Canvas) {
+        val lcol = intArrayOf(0xFFFF7AC8.toInt(), 0xFF4FD6C8.toInt(), 0xFFF5E663.toInt(), 0xFFA884FF.toInt())
+        for (k in 0 until 4) {
+            val l = proj.lfos[k]
+            val col = lfoCol[k]
+            fill.color = panel; c.drawRoundRect(col, u, u, fill)
+            // header + live value
+            text.textAlign = Paint.Align.LEFT; text.textSize = 2.6f * u; text.color = textCol
+            c.drawText("LFO ${k + 1}", col.left + 1.2f * u, col.top + 3.4f * u, text)
+            text.textAlign = Paint.Align.CENTER
+            val v = (status[30 + k] / 1000f).coerceIn(-1f, 1f)
+            val bar = RectF(col.left + 12f * u, col.top + 1.6f * u, col.right - 1.2f * u, col.top + 4f * u)
+            fill.color = 0xFF0E0F12.toInt(); c.drawRoundRect(bar, .4f * u, .4f * u, fill)
+            fill.color = lcol[k]
+            val cx = bar.centerX(); val xx = cx + v * bar.width() / 2f
+            c.drawRect(min(cx, xx), bar.top, max(cx, xx), bar.bottom, fill)
+            drawBtn(c, lfoWave[k], "~ ${Defs.lfoWaves[l.wave]}", ts = 2.1f)
+            drawKnob(c, lfoRate[k], "Rate", l.rate, Defs.lfoRate(l.sync, l.rate), lcol[k])
+            drawBtn(c, lfoSync[k], if (l.sync) "SYNC" else "FREE", l.sync, onCol = lcol[k], ts = 1.9f)
+            drawBtn(c, lfoRetrig[k], "RETRIG", l.retrig, onCol = lcol[k], ts = 1.9f)
+            for (d in 0 until 3) {
+                val dest = l.dest[d]
+                drawBtn(c, lfoDest[k][d], "→ " + proj.destName(dest), ts = 1.8f)
+                if (dest >= 0) {
+                    val dp = l.depth[d]
+                    val vt = if (dp == 0f) "0" else (if (dp > 0) "+" else "") + (dp * 100).roundToInt()
+                    drawKnob(c, lfoDepth[k][d], "Depth ${d + 1}", (dp + 1f) / 2f, vt, lcol[k])
+                } else {
+                    text.textSize = 1.8f * u; text.color = dim
+                    c.drawText("tap above to assign", lfoDepth[k][d].centerX(), lfoDepth[k][d].centerY(), text)
+                }
+            }
         }
     }
 
