@@ -1,0 +1,7 @@
+# keep the Linux build script runnable on GitHub even when edited on Windows
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf
+*.jar binary
+*.keystore binary
+*.jks binary

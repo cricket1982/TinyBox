@@ -1,0 +1,178 @@
+// TinyBox - AAudio output + JNI bridge
+#include <jni.h>
+#include <aaudio/AAudio.h>
+#include <android/log.h>
+#include <thread>
+#include <mutex>
+#include "engine.h"
+
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "TinyBox", __VA_ARGS__)
+
+static Engine *gEngine = nullptr;
+static AAudioStream *gStream = nullptr;
+static std::mutex gStreamLock;
+
+static inline void enableFlushToZero() {
+#if defined(__aarch64__)
+    uint64_t fpcr;
+    asm volatile("mrs %0, fpcr" : "=r"(fpcr));
+    asm volatile("msr fpcr, %0" ::"r"(fpcr | (1ull << 24)));
+#elif defined(__x86_64__) || defined(__i386__)
+    unsigned int csr;
+    asm volatile("stmxcsr %0" : "=m"(csr));
+    csr |= 0x8040;
+    asm volatile("ldmxcsr %0" ::"m"(csr));
+#endif
+}
+
+static aaudio_data_callback_result_t dataCallback(AAudioStream *, void *, void *audioData, int32_t numFrames) {
+    enableFlushToZero();
+    if (gEngine) gEngine->process((float *)audioData, numFrames);
+    else std::fill((float *)audioData, (float *)audioData + numFrames * 2, 0.f);
+    return AAUDIO_CALLBACK_RESULT_CONTINUE;
+}
+
+static void startStream();
+static void errorCallback(AAudioStream *, void *, aaudio_result_t err) {
+    LOGI("AAudio error %d, restarting stream", err);
+    if (err == AAUDIO_ERROR_DISCONNECTED) std::thread([] { startStream(); }).detach();
+}
+
+static void closeStream() {
+    if (gStream) {
+        AAudioStream_requestStop(gStream);
+        AAudioStream_close(gStream);
+        gStream = nullptr;
+    }
+}
+
+static void startStream() {
+    std::lock_guard<std::mutex> lock(gStreamLock);
+    closeStream();
+    AAudioStreamBuilder *b = nullptr;
+    if (AAudio_createStreamBuilder(&b) != AAUDIO_OK) return;
+    AAudioStreamBuilder_setDirection(b, AAUDIO_DIRECTION_OUTPUT);
+    AAudioStreamBuilder_setPerformanceMode(b, AAUDIO_PERFORMANCE_MODE_LOW_LATENCY);
+    AAudioStreamBuilder_setSharingMode(b, AAUDIO_SHARING_MODE_EXCLUSIVE);
+    AAudioStreamBuilder_setFormat(b, AAUDIO_FORMAT_PCM_FLOAT);
+    AAudioStreamBuilder_setChannelCount(b, 2);
+    AAudioStreamBuilder_setDataCallback(b, dataCallback, nullptr);
+    AAudioStreamBuilder_setErrorCallback(b, errorCallback, nullptr);
+    aaudio_result_t r = AAudioStreamBuilder_openStream(b, &gStream);
+    AAudioStreamBuilder_delete(b);
+    if (r != AAUDIO_OK) { LOGI("openStream failed %d", r); gStream = nullptr; return; }
+    int32_t sr = AAudioStream_getSampleRate(gStream);
+    if (!gEngine) gEngine = new Engine((float)sr);
+    else if ((float)sr != gEngine->sr) gEngine->setSampleRate((float)sr);
+    int32_t burst = AAudioStream_getFramesPerBurst(gStream);
+    AAudioStream_setBufferSizeInFrames(gStream, burst * 2);
+    AAudioStream_requestStart(gStream);
+    LOGI("stream started: %d Hz, burst %d", sr, burst);
+}
+
+#define JFN(ret, name) extern "C" JNIEXPORT ret JNICALL Java_com_tinybox_app_Native_##name
+
+JFN(void, start)(JNIEnv *, jclass) {
+    startStream();
+    if (!gEngine) gEngine = new Engine(48000.f);
+}
+JFN(void, stop)(JNIEnv *, jclass) { std::lock_guard<std::mutex> lock(gStreamLock); closeStream(); }
+JFN(jint, sampleRate)(JNIEnv *, jclass) { return gEngine ? (jint)gEngine->sr : 48000; }
+
+JFN(void, play)(JNIEnv *, jclass) { if (gEngine) gEngine->post({C_PLAY, 0, 0, 0, nullptr}); }
+JFN(void, halt)(JNIEnv *, jclass) { if (gEngine) gEngine->post({C_STOP, 0, 0, 0, nullptr}); }
+JFN(void, panic)(JNIEnv *, jclass) { if (gEngine) gEngine->post({C_PANIC, 0, 0, 0, nullptr}); }
+JFN(void, setBpm)(JNIEnv *, jclass, jfloat v) { if (gEngine) gEngine->bpm.store(v); }
+JFN(void, setSwing)(JNIEnv *, jclass, jfloat v) { if (gEngine) gEngine->swing.store(v); }
+JFN(void, setFill)(JNIEnv *, jclass, jboolean v) { if (gEngine) gEngine->fill.store(v); }
+JFN(void, queuePattern)(JNIEnv *, jclass, jint p) {
+    if (!gEngine || p < 0 || p >= kPatterns) return;
+    gEngine->queuedPattern.store(p);
+    if (!gEngine->playing.load()) gEngine->curPattern.store(p);
+}
+JFN(void, setParam)(JNIEnv *, jclass, jint t, jint i, jfloat v) {
+    if (gEngine && t >= 0 && t < kTracks && i >= 0 && i < kTrackParams) gEngine->setParam(t, i, v);
+}
+JFN(void, setMaster)(JNIEnv *, jclass, jint i, jfloat v) {
+    if (gEngine && i >= 0 && i < kMasterParams) gEngine->master[i] = v;
+}
+JFN(void, setMute)(JNIEnv *, jclass, jint t, jboolean m) { if (gEngine && t >= 0 && t < kTracks) gEngine->tracks[t].mute.store(m); }
+JFN(void, setSolo)(JNIEnv *, jclass, jint t, jboolean m) { if (gEngine && t >= 0 && t < kTracks) gEngine->tracks[t].solo.store(m); }
+JFN(void, setSong)(JNIEnv *env, jclass, jintArray pats, jintArray reps) {
+    if (!gEngine) return;
+    jsize n = std::min(env->GetArrayLength(pats), (jsize)Engine::kSongRows);
+    n = std::min(n, env->GetArrayLength(reps));
+    jint p[Engine::kSongRows], r[Engine::kSongRows];
+    env->GetIntArrayRegion(pats, 0, n, p); env->GetIntArrayRegion(reps, 0, n, r);
+    for (int i = 0; i < n; ++i) { gEngine->songPat[i] = (uint8_t)std::clamp(p[i], 0, kPatterns - 1); gEngine->songRep[i] = (uint8_t)std::clamp(r[i], 1, 64); }
+    gEngine->songLen.store(n);
+}
+JFN(void, setSongMode)(JNIEnv *, jclass, jboolean on, jboolean loop, jint startRow) {
+    if (!gEngine) return;
+    gEngine->songMode.store(on); gEngine->songLoop.store(loop); gEngine->songStart.store(startRow);
+}
+JFN(void, setMachine)(JNIEnv *, jclass, jint t, jint m) {
+    if (!gEngine || t < 0 || t >= kTracks || m < 0 || m >= M_COUNT) return;
+    gEngine->freeRetired();
+    Machine *mach = makeMachine(m, gEngine->sr, &gEngine->tracks[t].slot);
+    gEngine->post({C_SET_MACHINE, t, m, 0, mach});
+}
+JFN(void, setStep)(JNIEnv *, jclass, jint p, jint t, jint i, jint on, jint vel, jint prob, jint cond,
+                   jint ratchet, jint chord, jint note, jint micro, jfloat len, jint n2, jint n3, jint n4) {
+    if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks || i < 0 || i >= kMaxSteps) return;
+    Step &s = gEngine->patterns[p].steps[t][i];
+    s.vel = (uint8_t)std::clamp(vel, 1, 127); s.prob = (uint8_t)std::clamp(prob, 0, 100);
+    s.cond = (uint8_t)std::clamp(cond, 0, kCondCount - 1); s.ratchet = (uint8_t)std::clamp(ratchet, 1, 8);
+    s.chord = (uint8_t)std::clamp(chord, 0, 8); s.note = (uint8_t)std::clamp(note, 0, 127);
+    s.micro = (int8_t)std::clamp(micro, -12, 12); s.len = std::clamp(len, 0.25f, 64.f);
+    s.extra[0] = (int8_t)std::clamp(n2, -1, 127); s.extra[1] = (int8_t)std::clamp(n3, -1, 127); s.extra[2] = (int8_t)std::clamp(n4, -1, 127);
+    s.on = on ? 1 : 0;
+}
+JFN(void, setLock)(JNIEnv *, jclass, jint p, jint t, jint i, jint param, jfloat v) {
+    if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks || i < 0 || i >= kMaxSteps || param < 0 || param >= kTrackParams) return;
+    gEngine->patterns[p].steps[t][i].lock[param] = v;
+}
+JFN(void, setLength)(JNIEnv *, jclass, jint p, jint t, jint len) {
+    if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks) return;
+    gEngine->patterns[p].length[t] = (uint8_t)std::clamp(len, 1, kMaxSteps);
+}
+JFN(void, noteOn)(JNIEnv *, jclass, jint t, jint note, jfloat vel) { if (gEngine) gEngine->post({C_NOTE_ON, t, note, vel, nullptr}); }
+JFN(void, noteOff)(JNIEnv *, jclass, jint t, jint note) { if (gEngine) gEngine->post({C_NOTE_OFF, t, note, 0, nullptr}); }
+
+JFN(void, loadSample)(JNIEnv *env, jclass, jint t, jfloatArray l, jfloatArray r, jfloat sr) {
+    if (!gEngine || t < 0 || t >= kTracks) return;
+    gEngine->freeRetired();
+    auto *s = new Sample();
+    jsize n = env->GetArrayLength(l);
+    s->L.resize(n); s->R.resize(n); s->sr = sr;
+    env->GetFloatArrayRegion(l, 0, n, s->L.data());
+    env->GetFloatArrayRegion(r, 0, std::min(n, env->GetArrayLength(r)), s->R.data());
+    gEngine->post({C_SET_SAMPLE, t, 0, 0, s});
+}
+JFN(void, setSlices)(JNIEnv *env, jclass, jint t, jintArray starts) {
+    if (!gEngine || t < 0 || t >= kTracks) return;
+    jsize n = std::min(env->GetArrayLength(starts), (jsize)64);
+    SampleSlot &slot = gEngine->tracks[t].slot;
+    jint tmp[64];
+    env->GetIntArrayRegion(starts, 0, n, tmp);
+    for (int i = 0; i < n; ++i) slot.sliceStart[i] = tmp[i];
+    slot.sliceCount = std::max(1, (int)n);
+}
+
+// status: [0]=playing [1]=pattern [2..9]=current step per track [10..17]=trigger counters [18]=peak*1000
+//         [19..26]=track peaks*1000 [27]=song row [28]=song repeat
+JFN(void, status)(JNIEnv *env, jclass, jintArray out) {
+    if (!gEngine) return;
+    jint s[29];
+    s[0] = gEngine->playing.load() ? 1 : 0;
+    s[1] = gEngine->curPattern.load();
+    for (int t = 0; t < kTracks; ++t) {
+        s[2 + t] = gEngine->tracks[t].curStep.load();
+        s[10 + t] = gEngine->tracks[t].trigCount.load();
+    }
+    s[18] = (jint)(gEngine->peak.load() * 1000.f);
+    for (int t = 0; t < kTracks; ++t) s[19 + t] = (jint)(gEngine->tracks[t].peak.load() * 1000.f);
+    s[27] = gEngine->songRow.load(); s[28] = gEngine->songRepeat.load();
+    env->SetIntArrayRegion(out, 0, 29, s);
+}
+JFN(jdouble, relPos)(JNIEnv *, jclass) { return gEngine ? gEngine->relPos.load() : 0.0; }
