@@ -34,6 +34,9 @@ object Native {
     )
     @JvmStatic external fun setLock(pattern: Int, track: Int, step: Int, param: Int, value: Float)
     @JvmStatic external fun setLength(pattern: Int, track: Int, len: Int)
+    @JvmStatic external fun setRes(pattern: Int, track: Int, res: Int)
+    @JvmStatic external fun setInsert(track: Int, slot: Int, type: Int)
+    @JvmStatic external fun clearPatterns()
 
     @JvmStatic external fun noteOn(track: Int, note: Int, vel: Float)
     @JvmStatic external fun noteOff(track: Int, note: Int)

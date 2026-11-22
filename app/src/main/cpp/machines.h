@@ -9,7 +9,7 @@
 #include <cstring>
 
 constexpr int kMachParams = 12;
-constexpr int kTrackParams = 16; // 12 machine + level, pan, delay send, reverb send
+constexpr int kTrackParams = 24; // 12 machine + level, pan, delay send, reverb send + 2 inserts x (3 params + mix)
 
 enum MachineId {
     M_BD = 0, M_SD, M_HH, M_CP, M_FM, M_CB,
@@ -462,6 +462,7 @@ class Slicer : public Machine {
     struct V {
         bool on = false; double pos = 0, inc = 1; int start = 0, end = 0; bool rev = false;
         float amp = 0, ampC = 1, fade = 1, fadeStep = 0; int age = 0, attack = 0;
+        int note = -1; bool gated = false; float gateLeft = -1, relStep = 0;
     };
     static constexpr int NV = 4;
     V v[NV];
@@ -501,6 +502,12 @@ public:
         n.amp = t.vel * expo(p[9], 0.1f, 2.f);
         n.ampC = p[3] >= 0.99f ? 1.f : decayCoef(expo(p[3], 0.02f, 4.f), sr);
         n.fade = 1.f; n.fadeStep = 0.f; n.age = 0; n.attack = 0;
+        n.note = note; n.gated = p[10] > 0.5f; n.gateLeft = n.gated ? t.gateSamples : -1.f;
+        n.relStep = 1.f / (expo(p[11], 0.005f, 1.f) * sr);
+    }
+    // gate mode: releasing a held pad fades the slice out
+    void noteOff(int note) override {
+        for (auto &x : v) if (x.on && x.gated && x.note == note && x.gateLeft < 0.f && x.fadeStep == 0.f) x.fadeStep = x.relStep;
     }
     void render(float *l, float *r, int n, const float *live) override {
         bool any = false;
@@ -524,6 +531,7 @@ public:
             for (auto &x : v) {
                 if (!x.on) continue;
                 ++x.age;
+                if (x.gated && x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.fadeStep == 0.f) x.fadeStep = x.relStep; }
                 int ip = (int)x.pos; float fpos = (float)(x.pos - ip);
                 if (ip < 0 || ip + 1 >= frames) { x.on = false; continue; }
                 float sl = smp->L[ip] + (smp->L[ip + 1] - smp->L[ip]) * fpos;

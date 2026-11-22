@@ -5,9 +5,10 @@ import org.json.JSONObject
 import kotlin.math.roundToInt
 
 const val TRACKS = 8
-const val MAX_STEPS = 64
+const val MAX_STEPS = 128
 const val PATTERNS = 8
-const val TRACK_PARAMS = 16
+const val TRACK_PARAMS = 24   // 12 sound + level/pan/delay/reverb + 2 inserts x (3 + mix)
+const val DEST_STRIDE = 32
 const val MASTER_PARAMS = 24
 
 enum class Kind { DRUM, SLICER, SYNTH, GRAIN }
@@ -44,8 +45,8 @@ object Defs {
             listOf("Pitch", "Decay", "Damp", "Material", "Strike", "Hardness", "Tube", "Noise", "Drive"),
             listOf(.5f, .45f, .3f, .5f, .3f, .5f, .3f, .05f, 0f)),
         MachineDef("Slicer", "SLC", Kind.SLICER,
-            listOf("Pitch", "Start", "Length", "Decay", "Reverse", "Filter", "Reso", "Drive", "Choke", "Gain"),
-            listOf(.5f, 0f, 1f, 1f, 0f, .5f, .2f, 0f, 1f, .77f)),
+            listOf("Pitch", "Start", "Length", "Decay", "Reverse", "Filter", "Reso", "Drive", "Choke", "Gain", "Gate", "Release"),
+            listOf(.5f, 0f, 1f, 1f, 0f, .5f, .2f, 0f, 1f, .77f, 1f, .15f)),
         MachineDef("Poly Synth", "SYN", Kind.SYNTH,
             listOf("Wave", "Detune", "Sub", "Cutoff", "Reso", "FEnv", "Attack", "Decay", "Sustain", "Release", "Vibrato", "Drive"),
             listOf(0f, .3f, .2f, .45f, .3f, .35f, .05f, .4f, .6f, .35f, 0f, 0f)),
@@ -84,6 +85,22 @@ object Defs {
         9, 11 -> "Sample"; else -> "Synth"
     }
     val trackParams = listOf("Level", "Pan", "Delay", "Reverb")
+    class InsertDef(val name: String, val params: List<String>, val defaults: List<Float>)
+    val inserts = listOf(
+        InsertDef("Off", listOf(), listOf()),
+        InsertDef("Filter", listOf("Cutoff", "Reso", "Mode"), listOf(.6f, .3f, 0f)),
+        InsertDef("Drive", listOf("Drive", "Tone", "Output"), listOf(.4f, .6f, .6f)),
+        InsertDef("Crush", listOf("Bits", "Rate"), listOf(.5f, .3f)),
+        InsertDef("Chorus", listOf("Rate", "Depth", "Delay"), listOf(.3f, .5f, .4f)),
+        InsertDef("Phaser", listOf("Rate", "Depth", "Feedbk"), listOf(.3f, .7f, .5f)),
+        InsertDef("Comp", listOf("Thresh", "Ratio", "Makeup"), listOf(.6f, .5f, .2f)),
+        InsertDef("EQ", listOf("Low", "Mid", "High"), listOf(.5f, .5f, .5f)),
+        InsertDef("Trem/Pan", listOf("Rate", "Depth", "Mode"), listOf(.5f, .6f, 0f)),
+        InsertDef("Echo", listOf("Time", "Feedbk", "Tone"), listOf(.4f, .4f, .6f)),
+        InsertDef("Ring Mod", listOf("Freq"), listOf(.4f)),
+        InsertDef("Fold", listOf("Fold", "Symm"), listOf(.3f, .5f)),
+    )
+    val resNames = listOf("1/16", "1/32", "1/64")
     val trackDefaults = listOf(.75f, .5f, 0f, 0f)
     val masterParams = listOf("DlyTime", "DlyFdbk", "DlyTone", "DlyLvl", "RevSize", "RevDamp", "RevLvl", "Drive", "Volume",
         "CmpThr", "CmpRatio", "CmpAtk", "CmpRel", "CmpGain", "CmpMix")
@@ -121,17 +138,18 @@ object Defs {
     fun noteName(n: Int) = noteNames[((n % 12) + 12) % 12] + (n / 12 - 1)
 
     fun paramName(machine: Int, i: Int): String =
-        if (i >= 12) trackParams[i - 12] else machines[machine].params.getOrElse(i) { "" }
+        if (i >= 16) "" else if (i >= 12) trackParams[i - 12] else machines[machine].params.getOrElse(i) { "" }
 
     fun paramDefault(machine: Int, i: Int): Float =
-        if (i >= 12) trackDefaults[i - 12] else machines[machine].defaults.getOrElse(i) { 0.5f }
+        if (i >= 16) .5f else if (i >= 12) trackDefaults[i - 12] else machines[machine].defaults.getOrElse(i) { 0.5f }
 
     fun formatParam(machine: Int, i: Int, v: Float): String {
         val name = paramName(machine, i)
         return when {
             i == 13 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "C" else if (p < 0) "L${-p}" else "R$p" }
             machine == 9 && i == 0 -> { val s = ((v - .5f) * 48).roundToInt(); if (s > 0) "+$s" else "$s" }
-            machine == 9 && (i == 4 || i == 8) -> if (v > .5f) "On" else "Off"
+            machine == 9 && (i == 4 || i == 8 || i == 10) -> if (v > .5f) "On" else "Off"
+            machine == 9 && i == 11 -> "${(5.0 * Math.pow(200.0, v.toDouble())).roundToInt()}ms"
             machine == 9 && i == 5 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Off" else if (p < 0) "LP${-p}" else "HP$p" }
             machine == 9 && i == 3 -> if (v >= .99f) "Hold" else (v * 100).roundToInt().toString()
             name == "Ratio" && machine == 4 -> String.format("%.2f", .5f + v * 7.5f)
@@ -182,9 +200,10 @@ class StepData {
 
 class PatternData {
     val len = IntArray(TRACKS) { 16 }
+    val res = IntArray(TRACKS)   // 0 = 1/16, 1 = 1/32, 2 = 1/64
     val steps = Array(TRACKS) { Array(MAX_STEPS) { StepData() } }
     fun copyFrom(o: PatternData) {
-        o.len.copyInto(len)
+        o.len.copyInto(len); o.res.copyInto(res)
         for (t in 0 until TRACKS) for (i in 0 until MAX_STEPS) steps[t][i].copyFrom(o.steps[t][i])
     }
 }
@@ -194,6 +213,7 @@ class TrackData {
     val params = FloatArray(TRACK_PARAMS) { .5f }
     var mute = false
     var solo = false
+    val insType = IntArray(2)
     var sampleUri: String? = null
     var sampleName: String? = null
     var slices: IntArray = intArrayOf(0)
@@ -229,9 +249,45 @@ class Project {
         Native.setLfo(k, l.wave, l.rate, l.sync, l.retrig)
         for (d in 0 until 3) Native.setLfoDest(k, d, l.dest[d], l.depth[d])
     }
+    /** name of a track parameter, including the insert slots (16..23) */
+    fun paramName(t: Int, i: Int): String {
+        if (i < 16) return Defs.paramName(tracks[t].machine, i)
+        val slot = (i - 16) / 4; val j = (i - 16) % 4
+        val ty = tracks[t].insType[slot]
+        if (ty <= 0) return ""
+        val ab = if (slot == 0) "A" else "B"
+        return if (j == 3) "$ab Mix" else Defs.inserts[ty].params.getOrNull(j)?.let { "$ab $it" } ?: ""
+    }
+    fun paramDefault(t: Int, i: Int): Float {
+        if (i < 16) return Defs.paramDefault(tracks[t].machine, i)
+        val slot = (i - 16) / 4; val j = (i - 16) % 4
+        return if (j == 3) 1f else Defs.inserts[tracks[t].insType[slot]].defaults.getOrElse(j) { .5f }
+    }
+    fun formatParam(t: Int, i: Int, v: Float): String {
+        if (i < 16) return Defs.formatParam(tracks[t].machine, i, v)
+        val slot = (i - 16) / 4; val j = (i - 16) % 4
+        val ty = tracks[t].insType[slot]
+        return when {
+            j == 3 -> "${(v * 100).roundToInt()}%"
+            ty == 1 && j == 2 -> if (v < .33f) "LP" else if (v < .66f) "BP" else "HP"
+            ty == 8 && j == 2 -> if (v < .5f) "Trem" else "Pan"
+            ty == 7 -> { val db = ((v - .5f) * 24f).roundToInt(); if (db > 0) "+${db}dB" else "${db}dB" }
+            ty == 9 && j == 0 -> "${(10.0 * Math.pow(60.0, v.toDouble())).roundToInt()}ms"
+            else -> (v * 100).roundToInt().toString()
+        }
+    }
+    fun setInsert(t: Int, slot: Int, type: Int) {
+        val tr = tracks[t]
+        tr.insType[slot] = type
+        val def = Defs.inserts[type]
+        for (j in 0 until 3) tr.params[16 + slot * 4 + j] = def.defaults.getOrElse(j) { .5f }
+        tr.params[16 + slot * 4 + 3] = 1f
+        for (j in 0 until 4) Native.setParam(t, 16 + slot * 4 + j, tr.params[16 + slot * 4 + j])
+        Native.setInsert(t, slot, type)
+    }
     fun destName(d: Int): String = when {
         d < 0 -> "— none —"
-        d < 1000 -> { val t = d / 16; val i = d % 16; "T${t + 1} ${Defs.paramName(tracks[t].machine, i)}" }
+        d < 1000 -> { val t = d / DEST_STRIDE; val i = d % DEST_STRIDE; "T${t + 1} ${paramName(t, i).ifEmpty { "(unused)" }}" }
         else -> "Master ${Defs.masterParams.getOrElse(d - 1000) { "?" }}"
     }
 
@@ -251,10 +307,11 @@ class Project {
         Native.setSongMode(songMode && songPat.isNotEmpty(), songLoop, startRow)
     }
     fun pushPattern(p: Int) {
-        for (t in 0 until TRACKS) {
-            Native.setLength(p, t, patterns[p].len[t])
-            for (i in 0 until MAX_STEPS) pushStep(p, t, i)
-        }
+        for (t in 0 until TRACKS) pushPatternTrack(p, t)
+    }
+    fun pushPatternTrack(p: Int, t: Int) {
+        Native.setLength(p, t, patterns[p].len[t]); Native.setRes(p, t, patterns[p].res[t])
+        for (i in 0 until MAX_STEPS) pushStep(p, t, i)
     }
     fun pushTrack(t: Int, withMachine: Boolean) {
         val tr = tracks[t]
@@ -262,13 +319,19 @@ class Project {
         for (i in 0 until TRACK_PARAMS) Native.setParam(t, i, tr.params[i])
         Native.setMute(t, tr.mute)
         Native.setSolo(t, tr.solo)
+        Native.setInsert(t, 0, tr.insType[0]); Native.setInsert(t, 1, tr.insType[1])
         Native.setSlices(t, tr.slices)
     }
     fun pushAll() {
         Native.setBpm(bpm); Native.setSwing(swing)
         for (i in 0 until MASTER_PARAMS) Native.setMaster(i, master[i])
         for (t in 0 until TRACKS) pushTrack(t, true)
-        for (p in 0 until PATTERNS) pushPattern(p)
+        // the engine starts from empty patterns, so only non-empty steps need sending
+        Native.clearPatterns()
+        for (p in 0 until PATTERNS) for (t in 0 until TRACKS) {
+            Native.setLength(p, t, patterns[p].len[t]); Native.setRes(p, t, patterns[p].res[t])
+            for (i in 0 until MAX_STEPS) if (!patterns[p].steps[t][i].isDefault()) pushStep(p, t, i)
+        }
         pushSong()
         for (k in 0 until 4) pushLfo(k)
     }
@@ -282,6 +345,7 @@ class Project {
         for (tr in tracks) {
             val j = JSONObject()
             j.put("machine", tr.machine); j.put("mute", tr.mute); j.put("solo", tr.solo)
+            j.put("ins", JSONArray(tr.insType.toList()))
             j.put("params", JSONArray(tr.params.map { it.toDouble() }))
             tr.sampleUri?.let { j.put("sampleUri", it) }
             tr.sampleName?.let { j.put("sampleName", it) }
@@ -294,6 +358,7 @@ class Project {
         for (p in patterns) {
             val j = JSONObject()
             j.put("len", JSONArray(p.len.toList()))
+            j.put("res", JSONArray(p.res.toList()))
             val sa = JSONArray()
             for (t in 0 until TRACKS) for (i in 0 until MAX_STEPS) {
                 val s = p.steps[t][i]
@@ -325,6 +390,7 @@ class Project {
             la.put(j)
         }
         o.put("lfos", la)
+        o.put("destStride", DEST_STRIDE)
         o.put("fxSlots", JSONArray(fxSlots.toList()))
         return o
     }
@@ -342,6 +408,7 @@ class Project {
                     tr.machine = j.optInt("machine", 0).coerceIn(0, Defs.machines.size - 1)
                     tr.mute = j.optBoolean("mute", false)
                     tr.solo = j.optBoolean("solo", false)
+                    j.optJSONArray("ins")?.let { a -> for (s in 0 until minOf(2, a.length())) tr.insType[s] = a.getInt(s).coerceIn(0, Defs.inserts.size - 1) }
                     j.optJSONArray("params")?.let { a -> for (i in 0 until minOf(a.length(), TRACK_PARAMS)) tr.params[i] = a.getDouble(i).toFloat() }
                     tr.sampleUri = if (j.has("sampleUri")) j.getString("sampleUri") else null
                     tr.sampleName = if (j.has("sampleName")) j.getString("sampleName") else null
@@ -354,6 +421,7 @@ class Project {
                 for (p in 0 until minOf(pa.length(), PATTERNS)) {
                     val j = pa.getJSONObject(p); val pd = pr.patterns[p]
                     j.optJSONArray("len")?.let { a -> for (t in 0 until minOf(a.length(), TRACKS)) pd.len[t] = a.getInt(t).coerceIn(1, MAX_STEPS) }
+                    j.optJSONArray("res")?.let { a -> for (t in 0 until minOf(a.length(), TRACKS)) pd.res[t] = a.getInt(t).coerceIn(0, 2) }
                     j.optJSONArray("steps")?.let { sa ->
                         for (k in 0 until sa.length()) {
                             val sj = sa.getJSONObject(k)
@@ -387,7 +455,11 @@ class Project {
                     val j = la.getJSONObject(k); val l = pr.lfos[k]
                     l.wave = j.optInt("wave", 0).coerceIn(0, 6); l.rate = j.optDouble("rate", .4).toFloat()
                     l.sync = j.optBoolean("sync", true); l.retrig = j.optBoolean("retrig", false)
-                    j.optJSONArray("dest")?.let { a -> for (d in 0 until minOf(3, a.length())) l.dest[d] = a.getInt(d) }
+                    val oldStride = o.optInt("destStride", 16)
+                    j.optJSONArray("dest")?.let { a -> for (d in 0 until minOf(3, a.length())) {
+                        val v = a.getInt(d)
+                        l.dest[d] = if (v in 0 until 1000 && oldStride != DEST_STRIDE) (v / oldStride) * DEST_STRIDE + v % oldStride else v
+                    } }
                     j.optJSONArray("depth")?.let { a -> for (d in 0 until minOf(3, a.length())) l.depth[d] = a.getDouble(d).toFloat() }
                 }
             }

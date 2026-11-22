@@ -64,7 +64,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
     private var u = 10f
     private val topBtns = ArrayList<Pair<String, RectF>>()
     private val trackRows = Array(TRACKS + 1) { RectF() }
-    private val pageBtns = Array(4) { RectF() }
+    private val pageBtns = Array(8) { RectF() }
+    private val resBtn = RectF(); private val tabSound = RectF(); private val tabIns = RectF()
+    var knobTab = 0   // 0 = sound knobs, 1 = insert effects
     private val lenMinus = RectF(); private val lenPlus = RectF(); private val lenBox = RectF()
     private val stepCells = Array(16) { RectF() }
     private val stepKnobs = Array(8) { RectF() }
@@ -105,12 +107,15 @@ class GrooveView(private val app: MainActivity) : View(app) {
         for (i in 0..TRACKS) trackRows[i].set(u, ty0 + i * rh + .25f * u, leftW, ty0 + (i + 1) * rh - .25f * u)
         // right side
         val x0 = leftW + 1.5f * u; val x1 = w - u
-        val pw = 6f * u
-        for (i in 0 until 4) pageBtns[i].set(x0 + i * (pw + .6f * u), 9.5f * u, x0 + i * (pw + .6f * u) + pw, 13.5f * u)
-        val lx = x0 + 4 * (pw + .6f * u) + 2f * u
+        val pw = 4.2f * u
+        for (i in 0 until 8) pageBtns[i].set(x0 + i * (pw + .5f * u), 9.5f * u, x0 + i * (pw + .5f * u) + pw, 13.5f * u)
+        val lx = x0 + 8 * (pw + .5f * u) + 1.5f * u
         lenMinus.set(lx, 9.5f * u, lx + 4.5f * u, 13.5f * u)
         lenBox.set(lenMinus.right + .5f * u, 9.5f * u, lenMinus.right + 12f * u, 13.5f * u)
         lenPlus.set(lenBox.right + .5f * u, 9.5f * u, lenBox.right + 5f * u, 13.5f * u)
+        resBtn.set(lenPlus.right + 1.5f * u, 9.5f * u, lenPlus.right + 13f * u, 13.5f * u)
+        tabIns.set(x1 - 11f * u, 9.5f * u, x1, 13.5f * u)
+        tabSound.set(tabIns.left - 11.5f * u, 9.5f * u, tabIns.left - .5f * u, 13.5f * u)
         val cw = (x1 - x0) / 16f
         for (i in 0 until 16) {
             val gap = if (i % 4 == 3) .9f * u else .35f * u
@@ -375,20 +380,18 @@ class GrooveView(private val app: MainActivity) : View(app) {
 
     private fun drawGridHeader(c: Canvas) {
         val len = pat.len[selTrack]
-        for (i in 0 until 4) {
+        for (i in 0 until 8) {
             val has = i * 16 < len
-            drawBtn(c, pageBtns[i], "${i + 1}", i == page, if (has) panel2 else panel, onCol = trackCol[selTrack], ts = 2f)
+            drawBtn(c, pageBtns[i], "${i + 1}", i == page, if (has) panel2 else panel, onCol = trackCol[selTrack], ts = 1.9f)
         }
+        drawBtn(c, resBtn, "RES ${Defs.resNames[pat.res[selTrack]]}", pat.res[selTrack] > 0, onCol = 0xFF5AA9FF.toInt(), ts = 1.9f)
+        drawBtn(c, tabSound, "SOUND", knobTab == 0, onCol = 0xFFDADDE3.toInt(), ts = 1.9f)
+        drawBtn(c, tabIns, if (tr.insType.any { it > 0 }) "INSERT ●" else "INSERT", knobTab == 1, onCol = 0xFFDADDE3.toInt(), ts = 1.9f)
         drawBtn(c, lenMinus, "−", ts = 2.4f)
         drawBtn(c, lenPlus, "+", ts = 2.4f)
         fill.color = panel; c.drawRoundRect(lenBox, .8f * u, .8f * u, fill)
         text.textSize = 2f * u; text.color = textCol
         c.drawText("LEN $len", lenBox.centerX(), lenBox.centerY() + .7f * u, text)
-        text.textAlign = Paint.Align.LEFT; text.textSize = 2f * u; text.color = subText
-        val hint = if (editStep >= 0) "Editing step ${editStep + 1}: turn sound knobs to p-lock • tap other steps to switch"
-        else "Tap step = on/off • long-press step = edit (prob, cond, micro, ratchet, p-locks)"
-        c.drawText(hint, lenPlus.right + 2f * u, lenBox.centerY() + .7f * u, text)
-        text.textAlign = Paint.Align.CENTER
     }
 
     private fun drawSteps(c: Canvas) {
@@ -494,7 +497,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
             val v = stepKnobGet(s, k)
             val frac = (v - range.first).toFloat() / max(1, range.last - range.first)
             val poly = def.kind == Kind.SYNTH || def.kind == Kind.GRAIN
-            val active = when (k) { 7 -> poly; 6 -> poly; 5 -> def.kind != Kind.DRUM || tr.machine == 8; else -> true }
+            val active = when (k) { 7 -> poly; 6 -> poly || def.kind == Kind.SLICER; 5 -> def.kind != Kind.DRUM || tr.machine == 8; else -> true }
             drawKnob(c, stepKnobs[k], stepKnobNames[k], frac, stepKnobText(s, k), lockCol, active)
         }
         drawBtn(c, clrLockBtn, "CLR LOCKS", ts = 1.9f)
@@ -509,14 +512,44 @@ class GrooveView(private val app: MainActivity) : View(app) {
             return
         }
         val s = if (editStep >= 0) pat.steps[selTrack][editStep] else null
+        if (knobTab == 1) {
+            // two insert slots: [type button] [3 controls] [mix]
+            for (slot in 0 until 2) {
+                val ty = tr.insType[slot]
+                drawBtn(c, insTypeRect(slot), "${if (slot == 0) "A" else "B"}: ${Defs.inserts[ty].name}", ty > 0, onCol = 0xFF4FD6C8.toInt(), ts = 2.1f)
+                for (j in 0 until 4) {
+                    val i = 16 + slot * 4 + j
+                    val name = proj.paramName(selTrack, i)
+                    if (name.isEmpty()) continue
+                    val locked = s != null && s.lock[i] >= 0f
+                    val v = if (locked) s!!.lock[i] else tr.params[i]
+                    drawKnob(c, soundKnobs[slot * 8 + 1 + j], name.substring(2), v, proj.formatParam(selTrack, i, v), 0xFF4FD6C8.toInt(), true, locked)
+                }
+            }
+            text.textSize = 1.8f * u; text.color = subText
+            c.drawText("Inserts run before the mixer, in order A → B", soundKnobs[6].right, soundKnobs[14].centerY(), text)
+            return
+        }
         for (i in 0 until 16) {
-            val name = Defs.paramName(tr.machine, i)
+            val name = proj.paramName(selTrack, i)
             if (name.isEmpty()) continue
             val locked = s != null && s.lock[i] >= 0f
             val v = if (locked) s!!.lock[i] else tr.params[i]
             val col = if (i >= 12) 0xFF8A93A6.toInt() else trackCol[selTrack]
-            drawKnob(c, soundKnobs[i], name, v, Defs.formatParam(tr.machine, i, v), col, true, locked)
+            drawKnob(c, soundKnobs[i], name, v, proj.formatParam(selTrack, i, v), col, true, locked)
         }
+    }
+    private fun insTypeRect(slot: Int): RectF {
+        val r = soundKnobs[slot * 8]
+        return RectF(r.left + .4f * u, r.top + 2.5f * u, r.right - .4f * u, r.bottom - 2.5f * u)
+    }
+    /** knob cell -> track param index for the current knob tab, or -1 */
+    private fun knobParam(cell: Int): Int {
+        if (knobTab == 0) return if (proj.paramName(selTrack, cell).isEmpty()) -1 else cell
+        val slot = cell / 8; val j = cell % 8 - 1
+        if (j !in 0..3) return -1
+        val i = 16 + slot * 4 + j
+        return if (proj.paramName(selTrack, i).isEmpty()) -1 else i
     }
 
     private fun drawPerf(c: Canvas) {
@@ -845,7 +878,10 @@ class GrooveView(private val app: MainActivity) : View(app) {
             for (i in 0 until 12) if (fxPads[i].contains(x, y)) return Target.FxPad(i)
             return null
         }
-        for (i in 0 until 4) if (pageBtns[i].contains(x, y)) return Target.Btn("PAGE$i")
+        for (i in 0 until 8) if (pageBtns[i].contains(x, y)) return Target.Btn("PAGE$i")
+        if (resBtn.contains(x, y)) return Target.Btn("RES")
+        if (tabSound.contains(x, y)) return Target.Btn("TABSOUND")
+        if (tabIns.contains(x, y)) return Target.Btn("TABINS")
         if (lenMinus.contains(x, y)) return Target.Btn("LEN-")
         if (lenPlus.contains(x, y)) return Target.Btn("LEN+")
         for (i in 0 until 16) if (stepCells[i].contains(x, y)) return Target.StepCell(i)
@@ -854,10 +890,11 @@ class GrooveView(private val app: MainActivity) : View(app) {
             if (clrLockBtn.contains(x, y)) return Target.Btn("CLRLOCK")
             if (doneBtn.contains(x, y)) return Target.Btn("DONE")
         }
+        if (!showMaster && knobTab == 1) for (slot in 0 until 2) if (insTypeRect(slot).contains(x, y)) return Target.Btn("INS$slot")
         for (i in 0 until 16) if (soundKnobs[i].contains(x, y)) {
-            if (showMaster && i >= Defs.masterParams.size) return null
-            if (!showMaster && Defs.paramName(tr.machine, i).isEmpty()) return null
-            return Target.Knob(i)
+            if (showMaster) return if (i >= Defs.masterParams.size) null else Target.Knob(i)
+            val pi = knobParam(i)
+            return if (pi < 0) null else Target.Knob(pi)
         }
         if (perf.contains(x, y)) return hitPerf(x, y)
         return null
@@ -1009,7 +1046,8 @@ class GrooveView(private val app: MainActivity) : View(app) {
         if (!rec || !playing) return
         val p = curPattern
         val len = proj.patterns[p].len[track]
-        val rel = Native.relPos() - app.latencySteps()
+        val mult = 1 shl proj.patterns[p].res[track]
+        val rel = (Native.relPos() - app.latencySteps()) * mult   // in this track's steps
         val pos = ((rel % len) + len) % len
         val nearest = floor(pos + .5)
         var micro = ((pos - nearest) * 24).roundToInt().coerceIn(-12, 12)
@@ -1030,7 +1068,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
         }
         recPass[track][idx] = pass
         proj.pushStepFields(p, track, idx)
-        t.recStep = idx; t.recPos = rel; t.recTrack = track
+        t.recStep = idx; t.recPos = rel / mult; t.recTrack = track
     }
 
     private fun knobValue(i: Int): Float {
@@ -1100,17 +1138,15 @@ class GrooveView(private val app: MainActivity) : View(app) {
         when (tg) {
             is Target.Key -> {
                 heldKeys.remove(tg.note); Native.noteOff(tg.track, tg.note)
-                if (t.recStep >= 0 && !cancel) {
-                    val held = Native.relPos() - app.latencySteps() - t.recPos
-                    if (held > 0) {
-                        val s = proj.patterns[curPattern].steps[tg.track][t.recStep]
-                        s.len = ((held * 4).roundToInt() / 4f).coerceIn(.25f, 16f)
-                        proj.pushStepFields(curPattern, tg.track, t.recStep)
-                    }
-                }
+                recordLength(tg.track, t, cancel)
             }
             is Target.Pad -> {
                 Native.noteOff(tg.track, padNote(tg.track))
+                recordLength(tg.track, t, cancel)
+            }
+            is Target.Slice -> {
+                Native.noteOff(selTrack, tg.slice)
+                recordLength(selTrack, t, cancel)
             }
             is Target.Btn -> if (tg.id == "FILL") { fillHeld = false; Native.setFill(false) }
             is Target.FxPad -> { val id = proj.fxSlots[tg.id]; if (!fxLatch && !fxEdit && id >= 0) setFxOn(id, false) }
@@ -1129,7 +1165,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
                 if (lastTapKnob == tg.idx && now - lastTapTime < 350) {
                     if (showMaster) setKnob(tg.idx, Defs.masterDefaults[tg.idx])
                     else if (editStep >= 0) { pat.steps[selTrack][editStep].lock[tg.idx] = -1f; Native.setLock(curPattern, selTrack, editStep, tg.idx, -1f) }
-                    else setKnob(tg.idx, Defs.paramDefault(tr.machine, tg.idx))
+                    else setKnob(tg.idx, proj.paramDefault(selTrack, tg.idx))
                     lastTapKnob = -1
                 } else { lastTapKnob = tg.idx; lastTapTime = now }
             }
@@ -1160,6 +1196,58 @@ class GrooveView(private val app: MainActivity) : View(app) {
             is Target.SongCell -> { songSel = min(tg.row, max(0, proj.songPat.size - 1)); if (!playing) proj.pushSong(songSel) }
             else -> {}
         }
+    }
+
+    /** when a recorded key/pad/slice is released, store how long it was held as the step length */
+    private fun recordLength(track: Int, t: Touch, cancel: Boolean) {
+        if (t.recStep < 0 || cancel) return
+        val mult = 1 shl proj.patterns[curPattern].res[track]
+        val held = (Native.relPos() - app.latencySteps() - t.recPos) * mult
+        if (held <= 0) return
+        val s = proj.patterns[curPattern].steps[track][t.recStep]
+        s.len = ((held * 4).roundToInt() / 4f).coerceIn(.25f, 16f)
+        proj.pushStepFields(curPattern, track, t.recStep)
+    }
+
+    /** change a track's step resolution and re-space its steps so the pattern sounds the same */
+    private fun changeRes(track: Int, newRes: Int) {
+        val pd = pat
+        val oldRes = pd.res[track]
+        if (newRes == oldRes) return
+        val old = Array(MAX_STEPS) { StepData().also { s -> s.copyFrom(pd.steps[track][it]) } }
+        val oldLen = pd.len[track]
+        for (i in 0 until MAX_STEPS) pd.steps[track][i].copyFrom(StepData())
+        var dropped = 0
+        if (newRes > oldRes) {
+            val f = 1 shl (newRes - oldRes)
+            pd.len[track] = (oldLen * f).coerceAtMost(MAX_STEPS)
+            for (i in 0 until oldLen) {
+                val o = old[i]; val j = i * f
+                if (j >= MAX_STEPS) { if (o.on) dropped++; continue }
+                val n = pd.steps[track][j]; n.copyFrom(o)
+                n.len = (o.len * f).coerceAtMost(64f)
+                n.micro = (o.micro * f).coerceIn(-12, 12)
+            }
+        } else {
+            val f = 1 shl (oldRes - newRes)
+            pd.len[track] = ((oldLen + f - 1) / f).coerceAtLeast(1)
+            for (i in 0 until oldLen) {
+                val o = old[i]
+                if (o.isDefault()) continue
+                val exact = i.toFloat() / f + o.micro / 24f / f
+                var j = Math.round(exact)
+                val micro = ((exact - j) * 24f).roundToInt().coerceIn(-12, 12)
+                j = ((j % pd.len[track]) + pd.len[track]) % pd.len[track]
+                val n = pd.steps[track][j]
+                if (n.on) { if (o.on) dropped++; continue }
+                n.copyFrom(o); n.micro = micro; n.len = (o.len / f).coerceAtLeast(.25f)
+            }
+        }
+        pd.res[track] = newRes
+        proj.pushPatternTrack(curPattern, track)
+        if (page * 16 >= pd.len[track]) page = 0
+        editStep = -1
+        app.toast("Track ${track + 1}: ${Defs.resNames[newRes]} steps" + if (dropped > 0) " ($dropped overlapping step${if (dropped > 1) "s" else ""} merged)" else "")
     }
 
     private fun tapStep(cell: Int) {
@@ -1221,6 +1309,10 @@ class GrooveView(private val app: MainActivity) : View(app) {
             id.startsWith("LFORETRIG") -> { val k = id.substring(9).toInt(); proj.lfos[k].retrig = !proj.lfos[k].retrig; proj.pushLfo(k) }
             id.startsWith("LFODEST") -> { val k = id[7] - '0'; val d = id[8] - '0'; app.chooseLfoDest(k, d) { invalidate() } }
             id == "SEQ" -> pageMode = 0
+            id == "RES" -> changeRes(selTrack, (pat.res[selTrack] + 1) % 3)
+            id == "TABSOUND" -> knobTab = 0
+            id == "TABINS" -> knobTab = 1
+            id.startsWith("INS") && id.length == 4 -> { val slot = id[3] - '0'; app.chooseInsert(selTrack, slot) { invalidate() } }
             id == "MIX" -> pageMode = 1
             id == "SONG" -> pageMode = 2
             id.startsWith("SOLO") -> { val t = id.substring(4).toInt(); proj.tracks[t].solo = !proj.tracks[t].solo; Native.setSolo(t, proj.tracks[t].solo) }

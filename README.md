@@ -36,6 +36,11 @@ To build on GitHub and install on the tablet without a cable, see **GITHUB_SETUP
 
 Every track also has **Level, Pan, Delay send and Reverb send**. The master section has a tempo-synced ping-pong delay, a reverb, drive and a soft limiter.
 
+## v0.5 additions
+- **Slicer Gate and Release:** with Gate on (the default for new slicer tracks), a slice plays only while its pad is held, then fades out over the Release time. In the sequencer, the step's LEN sets how long each slice plays, and live recording captures how long you held each pad. Turn Gate off for the old one-shot behaviour.
+- **RES (step resolution), per track and per pattern:** 1/16, 1/32 or 1/64, set with the RES button in the grid header. Switching converts the existing steps so the pattern keeps its timing. Tracks can be up to 128 steps long (8 page buttons), so a 1/16 track can run 8 bars, a 1/32 track 4 bars and a 1/64 track 2 bars. Live REC uses the track's resolution, so fast fills land on 32nd or 64th steps, with micro-timing on top.
+- **Insert effects:** 2 slots per track (A then B, before the mixer). Use the SOUND/INSERT tabs above the knobs. The types are Filter (LP/BP/HP), Drive, Crush, Chorus, Phaser, Comp, 3-band EQ, Trem/Pan, Echo, Ring Mod and Fold. Each has up to 3 controls plus Mix. Insert controls can be p-locked per step and chosen as LFO destinations.
+
 ## Top bar
 PLAY, BPM, SWING · pages **SEQ PADS MIX SONG FX MOD** · patterns A–H · FILL, REC · **☰ MENU** (save, load, new, copy/paste pattern, clear track/pattern).
 

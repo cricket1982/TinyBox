@@ -35,6 +35,7 @@ void Engine::setSampleRate(float s) {
     sr = s;
     for (auto &tr : tracks) if (tr.mach) tr.mach->sr = sr;
     delay.init(sr); reverb.init(sr);
+    for (auto &tr : tracks) { tr.ins[0].prepare(sr); tr.ins[1].prepare(sr); }
     dcL.setLP(8.f, sr); dcR.setLP(8.f, sr);
     pbL.assign((int)(sr * 4.f), 0.f); pbR.assign((int)(sr * 4.f), 0.f); pw = 0;
     wowL.assign(4096, 0.f); wowR.assign(4096, 0.f); ww = 0;
@@ -140,11 +141,11 @@ bool Engine::evalCond(Track &tr, const Step &s, int loop) {
     return res;
 }
 
-void Engine::fireStep(int t, long long k, int offset) {
+void Engine::fireStep(int t, long long k, int offset, int mult) {
     Track &tr = tracks[t];
     const Pattern &P = patterns[curPattern.load(std::memory_order_relaxed)];
     int len = std::clamp((int)P.length[t], 1, kMaxSteps);
-    long long rel = k - patStart;
+    long long rel = k;
     int idx = (int)(rel % len);
     int loop = (int)(rel / len);
     tr.curStep.store(idx, std::memory_order_relaxed);
@@ -152,7 +153,7 @@ void Engine::fireStep(int t, long long k, int offset) {
     if (!s.on) return;
     if (!evalCond(tr, s, loop)) return;
     if (tr.mute.load(std::memory_order_relaxed)) return;
-    const float sps = sr * 60.f / (bpm.load() * 4.f);
+    const float sps = sr * 60.f / (bpm.load() * 4.f) / mult;   // samples per step of this track
     TrigParams tp;
     for (int i = 0; i < kTrackParams; ++i) tp.p[i] = s.lock[i] >= 0.f ? s.lock[i] : tr.base[i];
     tp.vel = s.vel / 127.f; tp.note = s.note; tp.chord = s.chord;
@@ -177,7 +178,10 @@ void Engine::runSequencer(int n) {
         // bar boundary (master length = longest track): pattern queue / song advance
         {
             int masterLen = 1;
-            for (int t = 0; t < kTracks; ++t) masterLen = std::max(masterLen, std::clamp((int)P->length[t], 1, kMaxSteps));
+            for (int t = 0; t < kTracks; ++t) {
+                int m = 1 << std::clamp((int)P->res[t], 0, 2);
+                masterLen = std::max(masterLen, (std::clamp((int)P->length[t], 1, kMaxSteps) + m - 1) / m);
+            }
             double rel = songPos - (double)patStart;
             long long boundaryAbs = patStart + ((long long)(rel / masterLen) + 1) * masterLen;
             if (songPos >= (double)boundaryAbs - 0.5 && boundaryAbs != lastBoundary) {
@@ -201,7 +205,7 @@ void Engine::runSequencer(int n) {
                 }
                 if (reset) {
                     patStart = boundaryAbs;
-                    for (auto &tr : tracks) { tr.nextK = patStart; tr.ratchLeft = 0; }
+                    for (auto &tr : tracks) { tr.nextK = 0; tr.ratchLeft = 0; }
                     curPattern.store(next); queuedPattern.store(next); cp = next; P = &patterns[cp];
                 }
             }
@@ -209,12 +213,13 @@ void Engine::runSequencer(int n) {
         for (int t = 0; t < kTracks; ++t) {
             Track &tr = tracks[t];
             int len = std::clamp((int)P->length[t], 1, kMaxSteps);
-            for (int guard = 0; guard < 4; ++guard) {
+            const int mult = 1 << std::clamp((int)P->res[t], 0, 2);
+            const double tpos = (songPos - (double)patStart) * mult;   // position in this track's steps
+            for (int guard = 0; guard < 8; ++guard) {
                 long long k = tr.nextK;
-                long long rel = k - patStart;
-                const Step &s = P->steps[t][(int)(rel % len)];
-                double off = (s.on ? s.micro / 24.0 : 0.0) + ((rel & 1) ? sw : 0.0);
-                if (songPos >= (double)k + off) { fireStep(t, k, i); tr.nextK = k + 1; }
+                const Step &s = P->steps[t][(int)(k % len)];
+                double off = (s.on ? s.micro / 24.0 : 0.0) + ((k & 1) ? sw : 0.0);
+                if (tpos >= (double)k + off) { fireStep(t, k, i, mult); tr.nextK = k + 1; }
                 else break;
             }
             if (tr.ratchLeft > 0) {
@@ -245,7 +250,7 @@ void Engine::runLfos(int n) {
         } else {
             float hz = expo(L.rate, 0.02f, 20.f);
             if (L.retrig) {
-                int dt = L.dest[0] >= 0 && L.dest[0] < kTracks * kTrackParams ? L.dest[0] / kTrackParams : -1;
+                int dt = L.dest[0] >= 0 && L.dest[0] < kTracks * kDestStride ? L.dest[0] / kDestStride : -1;
                 if (dt >= 0) { int c = tracks[dt].trigCount.load(std::memory_order_relaxed); if (c != L.lastTrig) { L.lastTrig = c; L.phase = std::floor(L.phase) + 1.0; } }
             }
             L.phase += hz * n / sr;
@@ -270,7 +275,7 @@ void Engine::runLfos(int n) {
             int dst = L.dest[d];
             if (dst < 0 || L.depth[d] == 0.f) continue;
             float m = v * L.depth[d] * 0.5f;
-            if (dst < kTracks * kTrackParams) trackMod[dst / kTrackParams][dst % kTrackParams] += m;
+            if (dst < kTracks * kDestStride) { int pi = dst % kDestStride; if (pi < kTrackParams) trackMod[dst / kDestStride][pi] += m; }
             else if (dst >= 1000 && dst < 1000 + kMasterParams) masterMod[dst - 1000] += m;
         }
     }
@@ -312,6 +317,8 @@ void Engine::process(float *out, int frames) {
                 tr.trigCount.fetch_add(1, std::memory_order_relaxed);
             }
             if (pos < n) m->render(tbufL + pos, tbufR + pos, n - pos, tr.eff);
+            tr.ins[0].process(tbufL, tbufR, n, tr.eff + 16);
+            tr.ins[1].process(tbufL, tbufR, n, tr.eff + 20);
 
             // mixer (gains ramp over the block to avoid zipper noise)
             float lv = tr.eff[TP_LEVEL]; lv = lv * lv * 1.6f;

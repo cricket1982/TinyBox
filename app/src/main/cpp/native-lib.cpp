@@ -144,6 +144,22 @@ JFN(void, setLock)(JNIEnv *, jclass, jint p, jint t, jint i, jint param, jfloat 
     if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks || i < 0 || i >= kMaxSteps || param < 0 || param >= kTrackParams) return;
     gEngine->patterns[p].steps[t][i].lock[param] = v;
 }
+JFN(void, setRes)(JNIEnv *, jclass, jint p, jint t, jint res) {
+    if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks) return;
+    gEngine->patterns[p].res[t] = (uint8_t)std::clamp(res, 0, 2);
+}
+JFN(void, setInsert)(JNIEnv *, jclass, jint t, jint slot, jint type) {
+    if (!gEngine || t < 0 || t >= kTracks || slot < 0 || slot > 1) return;
+    gEngine->tracks[t].ins[slot].type.store(std::clamp(type, 0, INS_COUNT - 1));
+}
+/** reset every pattern to empty (used before loading a project, so only non-empty steps need sending) */
+JFN(void, clearPatterns)(JNIEnv *, jclass) {
+    if (!gEngine) return;
+    for (auto &P : gEngine->patterns) {
+        for (int t = 0; t < kTracks; ++t) { P.length[t] = 16; P.res[t] = 0; for (auto &st : P.steps[t]) st.on = 0; }
+    }
+    for (auto &P : gEngine->patterns) for (int t = 0; t < kTracks; ++t) for (auto &st : P.steps[t]) st = Step();
+}
 JFN(void, setLength)(JNIEnv *, jclass, jint p, jint t, jint len) {
     if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks) return;
     gEngine->patterns[p].length[t] = (uint8_t)std::clamp(len, 1, kMaxSteps);

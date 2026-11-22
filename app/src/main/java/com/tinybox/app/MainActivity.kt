@@ -149,7 +149,7 @@ class MainActivity : Activity() {
                 if (g == 0) { l.dest[slot] = -1; project.pushLfo(k); done(); return@setItems }
                 val opts: List<Pair<Int, String>> = if (g <= TRACKS) {
                     val t = g - 1
-                    (0 until TRACK_PARAMS).map { i -> (t * 16 + i) to Defs.paramName(project.tracks[t].machine, i) }.filter { it.second.isNotEmpty() }
+                    (0 until TRACK_PARAMS).map { i -> (t * DEST_STRIDE + i) to project.paramName(t, i) }.filter { it.second.isNotEmpty() }
                 } else Defs.masterParams.indices.map { i -> (1000 + i) to Defs.masterParams[i] }
                 AlertDialog.Builder(this).setTitle(groups[g])
                     .setItems(opts.map { it.second }.toTypedArray()) { _, w ->
@@ -158,6 +158,13 @@ class MainActivity : Activity() {
                         project.pushLfo(k); done()
                     }.setNegativeButton("Cancel", null).show()
             }.setNegativeButton("Cancel", null).show()
+    }
+
+    fun chooseInsert(t: Int, slot: Int, done: () -> Unit) {
+        val names = Defs.inserts.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Track ${t + 1} insert ${if (slot == 0) "A" else "B"}")
+            .setSingleChoiceItems(names, project.tracks[t].insType[slot]) { d, w -> project.setInsert(t, slot, w); d.dismiss(); done() }
+            .setNegativeButton("Cancel", null).show()
     }
 
     fun chooseFxSlot(slot: Int, done: (Int) -> Unit) {

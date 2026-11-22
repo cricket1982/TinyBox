@@ -1,11 +1,13 @@
 // TinyBox - engine: sequencer, tracks, mixer, master FX
 #pragma once
 #include "machines.h"
+#include "inserts.h"
 #include <atomic>
 #include <vector>
 
 constexpr int kTracks = 8;
-constexpr int kMaxSteps = 64;
+constexpr int kMaxSteps = 128;
+constexpr int kDestStride = 32;   // LFO destination = track * 32 + param
 constexpr int kPatterns = 8;
 constexpr int kMasterParams = 24;
 enum { TP_LEVEL = 12, TP_PAN = 13, TP_DLY = 14, TP_REV = 15 };
@@ -46,7 +48,8 @@ struct Step {
 struct Pattern {
     Step steps[kTracks][kMaxSteps];
     uint8_t length[kTracks];
-    Pattern() { for (auto &l : length) l = 16; }
+    uint8_t res[kTracks];      // step resolution: 0 = 1/16, 1 = 1/32, 2 = 1/64
+    Pattern() { for (auto &l : length) l = 16; for (auto &r : res) r = 0; }
 };
 
 enum CmdType { C_PLAY, C_STOP, C_NOTE_ON, C_NOTE_OFF, C_SET_MACHINE, C_SET_SAMPLE, C_PANIC };
@@ -81,8 +84,9 @@ struct Track {
     std::atomic<bool> mute{false};
     std::atomic<bool> solo{false};
     std::atomic<float> peak{0.f};
+    Insert ins[2];
     // sequencer state (audio thread)
-    long long nextK = 0;
+    long long nextK = 0;   // next step to fire, counted in this track's own steps since the pattern started
     bool pre = true;
     int ratchLeft = 0; float ratchInterval = 0, ratchCount = 0; TrigParams ratchTP;
     std::atomic<int> curStep{-1};
@@ -167,7 +171,7 @@ public:
 private:
     void handleCmd(const Cmd &c);
     void runSequencer(int n);
-    void fireStep(int t, long long k, int offset);
+    void fireStep(int t, long long k, int offset, int mult);
     void emit(int t, const TrigParams &tp, int offset);
     void stopNow();
     long long lastBoundary = -1;
