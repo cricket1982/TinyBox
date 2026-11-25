@@ -4,6 +4,7 @@
 #include <android/log.h>
 #include <thread>
 #include <mutex>
+#include <time.h>
 #include "engine.h"
 
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, "TinyBox", __VA_ARGS__)
@@ -11,6 +12,13 @@
 static Engine *gEngine = nullptr;
 static AAudioStream *gStream = nullptr;
 static std::mutex gStreamLock;
+static std::atomic<long long> gFramesWritten{0};
+static std::atomic<int> gSampleRate{48000};
+
+static inline long long nowNs() {
+    timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
 
 static inline void enableFlushToZero() {
 #if defined(__aarch64__)
@@ -27,8 +35,10 @@ static inline void enableFlushToZero() {
 
 static aaudio_data_callback_result_t dataCallback(AAudioStream *, void *, void *audioData, int32_t numFrames) {
     enableFlushToZero();
-    if (gEngine) gEngine->process((float *)audioData, numFrames);
+    long long f = gFramesWritten.load(std::memory_order_relaxed);
+    if (gEngine) { gEngine->snapshotClock(f); gEngine->process((float *)audioData, numFrames); }
     else std::fill((float *)audioData, (float *)audioData + numFrames * 2, 0.f);
+    gFramesWritten.store(f + numFrames, std::memory_order_relaxed);
     return AAUDIO_CALLBACK_RESULT_CONTINUE;
 }
 
@@ -62,6 +72,7 @@ static void startStream() {
     AAudioStreamBuilder_delete(b);
     if (r != AAUDIO_OK) { LOGI("openStream failed %d", r); gStream = nullptr; return; }
     int32_t sr = AAudioStream_getSampleRate(gStream);
+    gSampleRate.store(sr); gFramesWritten.store(0);
     if (!gEngine) gEngine = new Engine((float)sr);
     else if ((float)sr != gEngine->sr) gEngine->setSampleRate((float)sr);
     int32_t burst = AAudioStream_getFramesPerBurst(gStream);
@@ -205,4 +216,38 @@ JFN(void, status)(JNIEnv *env, jclass, jintArray out) {
     for (int k = 0; k < kLfos; ++k) s[30 + k] = (jint)(gEngine->lfoVal[k].load() * 1000.f);
     env->SetIntArrayRegion(out, 0, std::min(34, (int)env->GetArrayLength(out)), s);
 }
+/**
+ * Sequencer position (in 1/16 steps since the pattern started) that was audible at the given
+ * moment (SystemClock.uptimeMillis / MotionEvent.getEventTime clock). Uses the stream's
+ * presentation timestamp, so touch and output latency are both accounted for.
+ * Returns NaN if not playing.
+ */
+JFN(jdouble, posAtTime)(JNIEnv *, jclass, jlong uptimeMs) {
+    if (!gEngine) return NAN;
+    long long frame0; double pos0, pat0, spf; bool play;
+    for (int tries = 0; tries < 8; ++tries) {
+        uint32_t a = gEngine->clkSeq.load(std::memory_order_acquire);
+        if (a & 1) continue;
+        frame0 = gEngine->clkFrame; pos0 = gEngine->clkSongPos; pat0 = gEngine->clkPatStart; spf = gEngine->clkStepsPerFrame; play = gEngine->clkPlaying;
+        if (gEngine->clkSeq.load(std::memory_order_acquire) == a) goto ok;
+    }
+    return NAN;
+ok:
+    if (!play) return NAN;
+    double sr = (double)gSampleRate.load();
+    double evNs = (double)uptimeMs * 1e6;
+    double frameAtEv;
+    int64_t fpos = 0, tns = 0;
+    std::lock_guard<std::mutex> lock(gStreamLock);
+    if (gStream && AAudioStream_getTimestamp(gStream, CLOCK_MONOTONIC, &fpos, &tns) == AAUDIO_OK) {
+        frameAtEv = (double)fpos + (evNs - (double)tns) * sr / 1e9;          // frame being heard at that moment
+    } else {
+        // fallback: assume one buffer of output latency
+        int32_t buf = gStream ? AAudioStream_getBufferSizeInFrames(gStream) : 512;
+        frameAtEv = (double)gFramesWritten.load() - buf + (evNs - (double)nowNs()) * sr / 1e9;
+    }
+    return pos0 + (frameAtEv - (double)frame0) * spf - pat0;
+}
+JFN(void, skipStep)(JNIEnv *, jclass, jint t, jlong k) { if (gEngine && t >= 0 && t < kTracks) gEngine->tracks[t].skipK.store(k); }
+JFN(void, setClick)(JNIEnv *, jclass, jboolean on) { if (gEngine) gEngine->click.store(on); }
 JFN(jdouble, relPos)(JNIEnv *, jclass) { return gEngine ? gEngine->relPos.load() : 0.0; }

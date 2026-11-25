@@ -36,6 +36,15 @@ To build on GitHub and install on the tablet without a cable, see **GITHUB_SETUP
 
 Every track also has **Level, Pan, Delay send and Reverb send**. The master section has a tempo-synced ping-pong delay, a reverb, drive and a soft limiter.
 
+## Live recording (v0.6)
+- **Timing:** hits are timed from the touch's own timestamp, and the audio stream reports exactly when each sample reaches the speaker. Touch delay and output delay are both measured rather than guessed. What you record is where you heard the beat when you hit the pad.
+- **Swing:** taken into account, so off-beat hits don't get pushed late on playback.
+- **No double hits:** a step you've just recorded isn't replayed on the same pass.
+- **☰ MENU settings:**
+  - **Record quantise:** Off (as played, to 1/24 of a step), 50%, or 100% (snapped to the grid).
+  - **Record timing offset:** −40 to +40 ms. Use it if your recordings consistently feel early or late.
+  - **Metronome while recording:** a click on every beat, with an accent on the bar, while REC is on.
+
 ## v0.5 additions
 - **Slicer Gate and Release:** with Gate on (the default for new slicer tracks), a slice plays only while its pad is held, then fades out over the Release time. In the sequencer, the step's LEN sets how long each slice plays, and live recording captures how long you held each pad. Turn Gate off for the old one-shot behaviour.
 - **RES (step resolution), per track and per pattern:** 1/16, 1/32 or 1/64, set with the RES button in the grid header. Switching converts the existing steps so the pattern keeps its timing. Tracks can be up to 128 steps long (8 page buttons), so a 1/16 track can run 8 bars, a 1/32 track 4 bars and a 1/64 track 2 bars. Live REC uses the track's resolution, so fast fills land on 32nd or 64th steps, with micro-timing on top.

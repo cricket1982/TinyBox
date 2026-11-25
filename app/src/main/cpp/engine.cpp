@@ -56,7 +56,8 @@ void Engine::freeRetired() {
 void Engine::handleCmd(const Cmd &c) {
     switch (c.type) {
         case C_PLAY: {
-            songPos = 0; patStart = 0; lastBoundary = -1;
+            songPos = 0; patStart = 0; lastBoundary = -1; lastClickBeat = -1;
+            for (auto &tr : tracks) tr.skipK.store(-1);
             if (songMode.load() && songLen.load() > 0) {
                 int r = std::clamp(songStart.load(), 0, songLen.load() - 1);
                 songRow.store(r); songRepeat.store(0);
@@ -102,6 +103,14 @@ void Engine::handleCmd(const Cmd &c) {
             for (auto &tr : tracks) if (tr.mach) tr.mach->allOff();
             break;
     }
+}
+
+void Engine::snapshotClock(long long frame) {
+    clkSeq.fetch_add(1, std::memory_order_acq_rel);   // odd = being written
+    clkFrame = frame; clkSongPos = songPos; clkPatStart = (double)patStart;
+    clkStepsPerFrame = bpm.load() / 60.0 * 4.0 / sr;
+    clkPlaying = playing.load(std::memory_order_relaxed);
+    clkSeq.fetch_add(1, std::memory_order_acq_rel);
 }
 
 void Engine::stopNow() {
@@ -151,6 +160,7 @@ void Engine::fireStep(int t, long long k, int offset, int mult) {
     tr.curStep.store(idx, std::memory_order_relaxed);
     const Step &s = P.steps[t][idx];
     if (!s.on) return;
+    if (tr.skipK.load(std::memory_order_relaxed) == k) { tr.skipK.store(-1, std::memory_order_relaxed); return; }
     if (!evalCond(tr, s, loop)) return;
     if (tr.mute.load(std::memory_order_relaxed)) return;
     const float sps = sr * 60.f / (bpm.load() * 4.f) / mult;   // samples per step of this track
@@ -169,6 +179,7 @@ void Engine::fireStep(int t, long long k, int offset, int mult) {
 }
 
 void Engine::runSequencer(int n) {
+    clickAt = -1;
     if (!playing.load(std::memory_order_relaxed)) return;
     const double stepsPerSample = bpm.load() / 60.0 * 4.0 / sr;
     const double sw = clampf(swing.load(), 50.f, 75.f) / 100.0 * 2.0 - 1.0;
@@ -205,7 +216,7 @@ void Engine::runSequencer(int n) {
                 }
                 if (reset) {
                     patStart = boundaryAbs;
-                    for (auto &tr : tracks) { tr.nextK = 0; tr.ratchLeft = 0; }
+                    for (auto &tr : tracks) { tr.nextK = 0; tr.ratchLeft = 0; tr.skipK.store(-1); }
                     curPattern.store(next); queuedPattern.store(next); cp = next; P = &patterns[cp];
                 }
             }
@@ -222,12 +233,21 @@ void Engine::runSequencer(int n) {
                 if (tpos >= (double)k + off) { fireStep(t, k, i, mult); tr.nextK = k + 1; }
                 else break;
             }
+            { long long sk = tr.skipK.load(std::memory_order_relaxed); if (sk >= 0 && sk + 1 < tr.nextK) tr.skipK.store(-1, std::memory_order_relaxed); }
             if (tr.ratchLeft > 0) {
                 tr.ratchCount -= 1.f;
                 if (tr.ratchCount <= 0.f) {
                     if (!tr.mute.load(std::memory_order_relaxed)) emit(t, tr.ratchTP, i);
                     --tr.ratchLeft; tr.ratchCount += tr.ratchInterval;
                 }
+            }
+        }
+        if (click.load(std::memory_order_relaxed)) {
+            long long beat = (long long)std::floor(songPos / 4.0);
+            if (beat != lastClickBeat) {
+                lastClickBeat = beat; clickEnv = 0.45f; clickPh = 0.f;
+                clickFreq = (beat % 4 == 0) ? 1760.f : 1175.f;
+                clickAt = i;
             }
         }
         songPos += stepsPerSample;
@@ -564,6 +584,11 @@ void Engine::process(float *out, int frames) {
                 }
             }
             L = softclip(L * drv) * vol; R = softclip(R * drv) * vol;
+            if (clickEnv > 1e-4f && (clickAt < 0 || i >= clickAt)) {
+                clickPh += clickFreq / sr; if (clickPh >= 1.f) clickPh -= 1.f;
+                float c = std::sin(kTwoPi * clickPh) * clickEnv; clickEnv *= 0.9985f;
+                L += c; R += c;
+            }
             out[(done + i) * 2] = L; out[(done + i) * 2 + 1] = R;
             float a = std::max(std::fabs(L), std::fabs(R)); if (a > pk) pk = a;
         }

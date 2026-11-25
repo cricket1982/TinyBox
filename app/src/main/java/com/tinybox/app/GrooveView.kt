@@ -825,6 +825,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
     }
 
     private class Touch(val target: Target, val x0: Float, val y0: Float, val start: Float, val t0: Long) {
+        var upTime = 0L
         var moved = false; var longFired = false
         var recStep = -1; var recPos = 0.0; var recTrack = -1
     }
@@ -960,7 +961,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
                     is Target.SongCell -> if (tg.row < proj.songPat.size) (if (tg.right) proj.songRep[tg.row] else proj.songPat[tg.row]).toFloat() else 0f
                     else -> 0f
                 }
-                val t = Touch(tg, x, y, start, SystemClock.uptimeMillis())
+                val t = Touch(tg, x, y, start, e.eventTime)   // touch timestamp (same clock as uptimeMillis)
                 touches[id] = t
                 onDown(t, x, y)
                 removeCallbacks(longPress); postDelayed(longPress, 400)
@@ -977,7 +978,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
                 val pi = e.actionIndex
                 val id = e.getPointerId(pi)
                 val t = touches.remove(id)
-                if (t != null) onUp(t, e.actionMasked == MotionEvent.ACTION_CANCEL)
+                if (t != null) { t.upTime = e.eventTime; onUp(t, e.actionMasked == MotionEvent.ACTION_CANCEL) }
                 if (e.actionMasked != MotionEvent.ACTION_POINTER_UP) {
                     // safety: release everything on final up
                     for ((_, rest) in touches) onUp(rest, true)
@@ -1047,17 +1048,22 @@ class GrooveView(private val app: MainActivity) : View(app) {
         val p = curPattern
         val len = proj.patterns[p].len[track]
         val mult = 1 shl proj.patterns[p].res[track]
-        val rel = (Native.relPos() - app.latencySteps()) * mult   // in this track's steps
-        val pos = ((rel % len) + len) % len
-        val nearest = floor(pos + .5)
-        var micro = ((pos - nearest) * 24).roundToInt().coerceIn(-12, 12)
-        var idx = (nearest.toInt()) % len
-        if (abs(micro) <= 1) micro = 0
-        val pass = floor(rel / len).toLong()
+        // where the beat was (as heard) at the moment the pad was touched, in this track's steps
+        val pos16 = app.posAt(t.t0)
+        val tpos = pos16 * mult
+        // pick the step whose actual play time (incl. swing) is nearest, keep the rest as micro-timing
+        val sw = (proj.swing.coerceIn(50f, 75f) / 100.0 * 2.0 - 1.0)
+        fun playsAt(k: Long) = k + if (k % 2L == 1L) sw else 0.0
+        val k0 = floor(tpos).toLong()
+        var k = maxOf(0L, k0)
+        for (c in longArrayOf(k0 - 1, k0, k0 + 1)) if (c >= 0 && abs(tpos - playsAt(c)) < abs(tpos - playsAt(k))) k = c
+        val q = app.recQuant
+        var micro = ((tpos - playsAt(k)) * 24.0 * (1.0 - q)).roundToInt().coerceIn(-12, 12)
+        var idx = (k % len).toInt()
+        val pass = k / len
         // chord grouping: keys pressed within ~120 ms of another recorded key land on the same step
         var group = false
-        val now = SystemClock.uptimeMillis()
-        for ((_, o) in touches) if (o !== t && o.recStep >= 0 && o.recTrack == track && now - o.t0 < 120) { idx = o.recStep; group = true }
+        for ((_, o) in touches) if (o !== t && o.recStep >= 0 && o.recTrack == track && abs(t.t0 - o.t0) < 120) { idx = o.recStep; group = true }
         val s = proj.patterns[p].steps[track][idx]
         val poly = Defs.machines[proj.tracks[track].machine].kind != Kind.DRUM
         if (poly && s.on && (group || recPass[track][idx] == pass)) {
@@ -1068,7 +1074,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
         }
         recPass[track][idx] = pass
         proj.pushStepFields(p, track, idx)
-        t.recStep = idx; t.recPos = rel / mult; t.recTrack = track
+        // you've just heard it live, so don't let the sequencer replay it on this pass (no flams)
+        if (!group) Native.skipStep(track, k)
+        t.recStep = idx; t.recPos = pos16; t.recTrack = track
     }
 
     private fun knobValue(i: Int): Float {
@@ -1202,7 +1210,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
     private fun recordLength(track: Int, t: Touch, cancel: Boolean) {
         if (t.recStep < 0 || cancel) return
         val mult = 1 shl proj.patterns[curPattern].res[track]
-        val held = (Native.relPos() - app.latencySteps() - t.recPos) * mult
+        val held = (app.posAt(if (t.upTime > 0) t.upTime else SystemClock.uptimeMillis()) - t.recPos) * mult
         if (held <= 0) return
         val s = proj.patterns[curPattern].steps[track][t.recStep]
         s.len = ((held * 4).roundToInt() / 4f).coerceIn(.25f, 16f)
@@ -1288,7 +1296,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
                 Native.queuePattern(p)
                 if (!playing) { curPattern = p; editStep = -1 }
             }
-            id == "REC" -> rec = !rec
+            id == "REC" -> { rec = !rec; Native.setClick(rec && app.clickOn) }
             id == "FX" -> pageMode = 3
             id == "FXLATCH" -> { fxLatch = !fxLatch; if (!fxLatch) releaseFx() }
             id == "FXCLEAR" -> releaseFx()
@@ -1302,7 +1310,16 @@ class GrooveView(private val app: MainActivity) : View(app) {
                 "Copy pattern ${'A' + curPattern}" to { button("COPY") },
                 "Paste into pattern ${'A' + curPattern}" to { button("PASTE") },
                 "Clear track ${selTrack + 1} in pattern ${'A' + curPattern}" to { button("CLR") },
-                "Clear whole pattern ${'A' + curPattern}" to { clearPattern(); invalidate() }))
+                "Clear whole pattern ${'A' + curPattern}" to { clearPattern(); invalidate() },
+                "Record quantise: ${when (app.recQuant) { 0f -> "Off (as played)"; .5f -> "50%"; else -> "100% (on the grid)" }} — tap to change" to {
+                    app.recQuant = when (app.recQuant) { 0f -> .5f; .5f -> 1f; else -> 0f }
+                    app.toast("Record quantise: " + when (app.recQuant) { 0f -> "off"; .5f -> "50%"; else -> "100%" })
+                },
+                "Record timing offset: ${app.recOffsetMs} ms…" to { app.recOffsetDialog { invalidate() } },
+                "Metronome while recording: ${if (app.clickOn) "On" else "Off"} — tap to change" to {
+                    app.clickOn = !app.clickOn; Native.setClick(rec && app.clickOn)
+                    app.toast("Metronome " + if (app.clickOn) "on" else "off")
+                }))
             id.startsWith("BANK") -> { val b = id.substring(4).toInt(); if (b * 16 < tr.slices.size) sliceBank = b }
             id.startsWith("LFOWAVE") -> { val k = id.substring(7).toInt(); proj.lfos[k].wave = (proj.lfos[k].wave + 1) % Defs.lfoWaves.size; proj.pushLfo(k) }
             id.startsWith("LFOSYNC") -> { val k = id.substring(7).toInt(); proj.lfos[k].sync = !proj.lfos[k].sync; proj.pushLfo(k) }

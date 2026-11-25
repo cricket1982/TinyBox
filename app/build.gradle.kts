@@ -11,9 +11,9 @@ android {
         applicationId = "com.tinybox.app"
         minSdk = 26          // AAudio
         targetSdk = 35
-        versionCode = 5
+        versionCode = 6
         // a release tag like "v0.3" becomes the version name on GitHub builds
-        versionName = System.getenv("VERSION_NAME")?.removePrefix("v")?.ifEmpty { null } ?: "0.5"
+        versionName = System.getenv("VERSION_NAME")?.removePrefix("v")?.ifEmpty { null } ?: "0.6"
         ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         externalNativeBuild { cmake { cppFlags += "-std=c++17" } }
     }

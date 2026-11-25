@@ -65,8 +65,34 @@ class MainActivity : Activity() {
 
     fun toast(msg: String) = Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
 
-    /** approx. output + touch latency in steps, used when live-recording */
+    /** fallback latency estimate in steps (only used if the audio timestamp isn't available) */
     fun latencySteps(): Double = 0.040 * project.bpm / 60.0 * 4.0
+
+    // ---- recording settings (kept between sessions)
+    private val prefs by lazy { getSharedPreferences("tinybox", MODE_PRIVATE) }
+    var recQuant: Float
+        get() = prefs.getFloat("recQuant", 0f)
+        set(v) { prefs.edit().putFloat("recQuant", v).apply() }
+    var recOffsetMs: Int
+        get() = prefs.getInt("recOffsetMs", 0)
+        set(v) { prefs.edit().putInt("recOffsetMs", v).apply() }
+    var clickOn: Boolean
+        get() = prefs.getBoolean("click", true)
+        set(v) { prefs.edit().putBoolean("click", v).apply() }
+
+    /** position heard at a touch's timestamp, in 1/16 steps since the pattern started */
+    fun posAt(uptimeMs: Long): Double {
+        val p = Native.posAtTime(uptimeMs + recOffsetMs)
+        return if (p.isNaN()) Native.relPos() - latencySteps() else p
+    }
+
+    fun recOffsetDialog(done: () -> Unit) {
+        val opts = listOf(-40, -30, -20, -10, 0, 10, 20, 30, 40)
+        val names = opts.map { (if (it > 0) "+" else "") + "$it ms" + when { it < 0 -> " (hits land earlier)"; it > 0 -> " (hits land later)"; else -> " (default)" } }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Record timing offset")
+            .setSingleChoiceItems(names, opts.indexOf(recOffsetMs).coerceAtLeast(0)) { d, w -> recOffsetMs = opts[w]; d.dismiss(); done() }
+            .setNegativeButton("Cancel", null).show()
+    }
 
     // ------------------------------------------------------------ project handling
     private fun applyProject(p: Project) {

@@ -48,4 +48,8 @@ object Native {
      *  [19..26]=track peaks*1000 [27]=song row [28]=song repeat [29]=compressor GR dB*100 [30..33]=LFO values*1000 */
     @JvmStatic external fun status(out: IntArray)
     @JvmStatic external fun relPos(): Double
+    /** sequencer position (1/16 steps since pattern start) audible at an uptimeMillis moment, NaN if stopped */
+    @JvmStatic external fun posAtTime(uptimeMs: Long): Double
+    @JvmStatic external fun skipStep(track: Int, k: Long)
+    @JvmStatic external fun setClick(on: Boolean)
 }

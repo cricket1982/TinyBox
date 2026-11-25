@@ -90,6 +90,7 @@ struct Track {
     bool pre = true;
     int ratchLeft = 0; float ratchInterval = 0, ratchCount = 0; TrigParams ratchTP;
     std::atomic<int> curStep{-1};
+    std::atomic<long long> skipK{-1};   // a just-recorded step: don't replay it on this pass (avoids double hits)
     std::atomic<int> trigCount{0};
 };
 
@@ -142,6 +143,14 @@ public:
     std::atomic<bool> fill{false};
     std::atomic<bool> playing{false};
     std::atomic<double> relPos{0.0};
+    std::atomic<bool> click{false};
+    // timing snapshot for live recording (written at the start of each audio block)
+    std::atomic<uint32_t> clkSeq{0};
+    long long clkFrame = 0;      // stream frame index of the block start
+    double clkSongPos = 0, clkPatStart = 0, clkStepsPerFrame = 0;
+    bool clkPlaying = false;
+    void snapshotClock(long long frame);
+    double songPosNow() const { return songPos; }
     std::atomic<float> peak{0.f};
     std::atomic<float> compGR{0.f};      // dB of gain reduction
     std::atomic<bool> fxOn[32];
@@ -174,6 +183,7 @@ private:
     void fireStep(int t, long long k, int offset, int mult);
     void emit(int t, const TrigParams &tp, int offset);
     void stopNow();
+    float clickEnv = 0.f, clickPh = 0.f, clickFreq = 1000.f; long long lastClickBeat = -1; int clickAt = -1;
     long long lastBoundary = -1;
     bool evalCond(Track &tr, const Step &s, int loop);
 
