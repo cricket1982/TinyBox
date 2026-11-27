@@ -18,6 +18,7 @@ enum MachineId {
     M_GRAIN, M_FMSYN, M_STRING,
     M_CHIP, M_KSDRUM, M_VOX,
     M_WEST, M_PD, M_FORMANT,
+    M_ONESHOT, M_VOICE,
     M_COUNT
 };
 
@@ -471,6 +472,7 @@ class Slicer : public Machine {
     int ctr = 0;
 public:
     SampleSlot *slot = nullptr;
+    bool oneShot = false;   // Sampler mode: whole sample, step note transposes (60 = original pitch)
     void allOff() override { for (auto &x : v) x.on = false; }
     void trigger(const TrigParams &t) override {
         for (int k = 0; k < t.nnotes; ++k) triggerOne(t, t.notes[k], k == 0);
@@ -480,9 +482,9 @@ public:
         const Sample *smp = slot->sample;
         const float *p = t.p;
         int cnt = std::max(1, slot->sliceCount);
-        int si = ((note % cnt) + cnt) % cnt;
-        int s0 = slot->sliceStart[si];
-        int s1 = (si + 1 < cnt) ? slot->sliceStart[si + 1] : smp->frames();
+        int si = oneShot ? 0 : ((note % cnt) + cnt) % cnt;
+        int s0 = oneShot ? 0 : slot->sliceStart[si];
+        int s1 = (!oneShot && si + 1 < cnt) ? slot->sliceStart[si + 1] : smp->frames();
         s0 = std::clamp(s0, 0, smp->frames()); s1 = std::clamp(s1, 0, smp->frames());
         if (s1 - s0 < 16) return;
         int len = s1 - s0;
@@ -497,7 +499,7 @@ public:
         V &n = *slotV;
         n.on = true; n.start = st; n.end = en; n.rev = p[4] > 0.5f;
         n.pos = n.rev ? (double)(en - 1) : (double)st;
-        float semis = (p[0] - 0.5f) * 48.f;
+        float semis = (p[0] - 0.5f) * 48.f + (oneShot ? (float)(note - 60) : 0.f);
         n.inc = std::pow(2.0, semis / 12.0) * smp->sr / sr;
         n.amp = t.vel * expo(p[9], 0.1f, 2.f);
         n.ampC = p[3] >= 0.99f ? 1.f : decayCoef(expo(p[3], 0.02f, 4.f), sr);
@@ -1218,6 +1220,112 @@ public:
     }
 };
 
+// ---------------------------------------------------------------- PM Voice: vocal tract physical model
+// Kelly-Lochbaum waveguide tube (after Pink Trombone) excited by a Rosenberg glottal pulse + aspiration.
+class PMVoice : public Machine {
+    static constexpr int NMAX = 30;
+    struct V {
+        int note = -1; ADSR env; float vel = 0, gateLeft = -1, freq = 100, ph = 0; int age = 0;
+        float R[NMAX] = {0}, L[NMAX] = {0}, jR[NMAX + 1] = {0}, jL[NMAX + 1] = {0};
+        float lastFlow = 0, jit = 0, jitT = 0, out = 0, dc = 0;
+    };
+    static constexpr int NV = 8;
+    V v[NV];
+    float refl[NMAX + 1] = {0}, diam[NMAX] = {0};
+    int N = 22; float lfo = 0; Rng rng{3141}; float tractGain = 2.f;
+    float lastShape[3] = {-1, -1, -1};
+    // vowel area functions (cm^2), glottis -> lips, 10 control points; tuned so the tube's
+    // first two resonances match measured vowel formants (a 730/1090, e 530/1840, i 270/2290, o 570/840, u 300/870 Hz)
+    static constexpr float kArea[5][10] = {
+        {0.64f, 0.33f, 0.16f, 0.58f, 2.48f, 6.15f, 7.65f, 5.57f, 1.79f, 2.92f},   // a
+        {0.8f, 2.4f, 4.0f, 4.4f, 4.0f, 3.0f, 1.8f, 1.1f, 1.2f, 2.2f},   // e
+        {0.9f, 3.2f, 6.0f, 7.0f, 6.0f, 3.6f, 1.4f, 0.45f, 0.35f, 1.6f},   // i
+        {1.56f, 1.6f, 2.0f, 1.3f, 0.78f, 0.48f, 2.84f, 8.79f, 7.48f, 0.45f},   // o
+        {0.76f, 3.0f, 1.97f, 1.46f, 1.36f, 0.18f, 3.5f, 4.36f, 2.29f, 0.15f},   // u
+    };
+    void start(int note, float vel, float gate) {
+        V *x = allocVoice(v);
+        x->note = note; x->vel = vel; x->gateLeft = gate; x->env.stage = 1; x->age = 0; x->freq = mtof((float)note);
+        if (x->env.env < 0.001f) { std::memset(x->R, 0, sizeof(x->R)); std::memset(x->L, 0, sizeof(x->L)); x->ph = 0; }
+    }
+    void shapeTract(float vowel, float lips, float throat) {
+        N = std::clamp(17 + (int)(throat * 11.f), 17, NMAX);          // tract length: bigger = lower formants
+        float pos = clampf(vowel, 0.f, 1.f) * 3.999f; int v0 = (int)pos; float vf = pos - v0;
+        for (int i = 0; i < N; ++i) {
+            float cp = (float)i / (N - 1) * 9.f; int c0 = std::min(8, (int)cp); float cf = cp - c0;
+            float a0 = lerpf(kArea[v0][c0], kArea[v0][c0 + 1], cf), a1 = lerpf(kArea[v0 + 1][c0], kArea[v0 + 1][c0 + 1], cf);
+            float area = lerpf(a0, a1, vf);
+            if (i >= N - 2) area *= (1.f - lips * 0.92f);               // lip rounding / closing
+            diam[i] = std::sqrt(std::max(0.03f, area));
+        }
+        for (int i = 1; i < N; ++i) {
+            float a0 = diam[i - 1] * diam[i - 1], a1 = diam[i] * diam[i];
+            refl[i] = (a0 - a1) / (a0 + a1 + 1e-6f);
+        }
+        // rounded / closed lips radiate less sound: compensate so every vowel sits at a similar level
+        float lipArea = diam[N - 1] * diam[N - 1];
+        tractGain = 2.2f * clampf(std::sqrt(2.9f / std::max(0.03f, lipArea)), 1.f, 5.f);
+    }
+    static inline float glottal(float t, float oq) {
+        // Rosenberg glottal flow: rise to 0.6*oq, fall to oq, closed after
+        float a = 0.6f * oq;
+        if (t < a) return 0.5f * (1.f - std::cos(kPi * t / a));
+        if (t < oq) return std::cos(kPi * 0.5f * (t - a) / (oq - a));
+        return 0.f;
+    }
+public:
+    POLY_COMMON_TRIGGER
+    void render(float *l, float *r, int n, const float *p) override {
+        bool any = false; for (auto &x : v) any |= x.env.stage != 0;
+        if (!any) return;
+        if (p[0] != lastShape[0] || p[1] != lastShape[1] || p[2] != lastShape[2]) {
+            shapeTract(p[0], p[1], p[2]); lastShape[0] = p[0]; lastShape[1] = p[1]; lastShape[2] = p[2];
+        }
+        const float oq = 0.85f - p[3] * 0.5f;           // tension: tighter folds = shorter open phase, brighter
+        const float breath = p[4] * 0.6f;
+        const float vib = p[5] * 0.7f;
+        const float jitAmt = p[10] * 0.6f;
+        const float drive = p[11], gg = 1.f + drive * 4.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        for (auto &x : v) if (x.env.stage) x.env.set(expo(p[6], 0.005f, 3.f), expo(p[7], 0.02f, 4.f), p[8], expo(p[9], 0.02f, 5.f), sr);
+        const int NN = N;
+        for (int i = 0; i < n; ++i) {
+            lfo += 5.3f / sr; if (lfo >= 1.f) lfo -= 1.f;
+            const float vm = std::pow(2.f, vib * std::sin(kTwoPi * lfo) / 12.f);
+            float out = 0.f;
+            for (auto &x : v) {
+                if (!x.env.stage) continue;
+                ++x.age;
+                if (x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.env.stage < 3) x.env.stage = 3; }
+                float e = x.env.tick();
+                if (!x.env.stage) continue;
+                // slow random pitch wander (human jitter)
+                if (--x.jitT <= 0.f) { x.jitT = sr * 0.05f; x.jit = rng.next() * jitAmt; }
+                float f = x.freq * vm * std::pow(2.f, x.jit * 0.1f);
+                x.ph += f / sr; if (x.ph >= 1.f) x.ph -= 1.f;
+                float flow = glottal(x.ph, oq);
+                float dflow = (flow - x.lastFlow) * 8.f; x.lastFlow = flow;     // flow derivative drives the tract
+                float asp = rng.next() * breath * (0.3f + flow);
+                float g = (dflow + asp) * e;
+                // waveguide junctions
+                x.jR[0] = x.L[0] * 0.75f + g;
+                x.jL[NN] = x.R[NN - 1] * -0.85f;
+                for (int k = 1; k < NN; ++k) {
+                    float w = refl[k] * (x.R[k - 1] + x.L[k]);
+                    x.jR[k] = x.R[k - 1] - w;
+                    x.jL[k] = x.L[k] + w;
+                }
+                for (int k = 0; k < NN; ++k) { x.R[k] = x.jR[k] * 0.999f; x.L[k] = x.jL[k + 1] * 0.999f; }
+                float o = x.R[NN - 1];
+                x.dc += (o - x.dc) * 0.002f;
+                out += (o - x.dc) * x.vel * 0.5f * tractGain;
+            }
+            out = softclip(out * gg) / gn;
+            l[i] += out; r[i] += out;
+        }
+    }
+};
+constexpr float PMVoice::kArea[5][10];
+
 inline Machine *makeMachine(int id, float sr, SampleSlot *slot) {
     Machine *m = nullptr;
     switch (id) {
@@ -1240,6 +1348,8 @@ inline Machine *makeMachine(int id, float sr, SampleSlot *slot) {
         case M_WEST: m = new WestCoast(); break;
         case M_PD: m = new PhaseDist(); break;
         case M_FORMANT: m = new FormantSynth(); break;
+        case M_ONESHOT: { auto *s = new Slicer(); s->slot = slot; s->oneShot = true; m = s; break; }
+        case M_VOICE: m = new PMVoice(); break;
         case M_SYNTH: default: m = new PolySynth(); break;
     }
     m->sr = sr;

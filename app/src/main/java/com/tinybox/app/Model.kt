@@ -9,7 +9,7 @@ const val MAX_STEPS = 128
 const val PATTERNS = 8
 const val TRACK_PARAMS = 24   // 12 sound + level/pan/delay/reverb + 2 inserts x (3 + mix)
 const val DEST_STRIDE = 32
-const val MASTER_PARAMS = 24
+const val MASTER_PARAMS = 40   // 0..12 master + compressor, 16..31 master FX chain (4 slots x 4)
 
 enum class Kind { DRUM, SLICER, SYNTH, GRAIN }
 
@@ -77,12 +77,18 @@ object Defs {
         MachineDef("Formant", "FMT", Kind.SYNTH,
             listOf("Vowel", "VowelEnv", "Shift", "Q", "Breath", "Detune", "Attack", "Decay", "Sustain", "Release", "Vibrato", "Drive"),
             listOf(.2f, .65f, .5f, .5f, .1f, .3f, .1f, .5f, .7f, .45f, .2f, 0f)),
+        MachineDef("Sampler", "SMP", Kind.DRUM,
+            listOf("Pitch", "Start", "Length", "Decay", "Reverse", "Filter", "Reso", "Drive", "Choke", "Gain", "Gate", "Release"),
+            listOf(.5f, 0f, 1f, 1f, 0f, .5f, .2f, 0f, 1f, .77f, 0f, .15f)),
+        MachineDef("PM Voice", "VOC", Kind.SYNTH,
+            listOf("Vowel", "Lips", "Throat", "Tension", "Breath", "Vibrato", "Attack", "Decay", "Sustain", "Release", "Jitter", "Drive"),
+            listOf(0f, 0f, .4f, .5f, .15f, .25f, .08f, .5f, .8f, .35f, .3f, 0f)),
     )
     /** order + group names for the machine picker */
-    val pickerOrder = listOf(0, 1, 2, 3, 4, 5, 14, 15, 16, 6, 7, 8, 13, 9, 11, 10, 12, 17, 18, 19)
+    val pickerOrder = listOf(0, 1, 2, 3, 4, 5, 14, 15, 16, 20, 6, 7, 8, 13, 21, 9, 11, 10, 12, 17, 18, 19)
     fun group(m: Int) = when (m) {
-        in 0..5 -> "Classic drum"; 14, 15, 16 -> "Unusual drum"; 6, 7, 8, 13 -> "Physical model"
-        9, 11 -> "Sample"; else -> "Synth"
+        in 0..5 -> "Classic drum"; 14, 15, 16 -> "Unusual drum"; 6, 7, 8, 13, 21 -> "Physical model"
+        9, 11, 20 -> "Sample"; else -> "Synth"
     }
     val trackParams = listOf("Level", "Pan", "Delay", "Reverb")
     class InsertDef(val name: String, val params: List<String>, val defaults: List<Float>)
@@ -99,12 +105,23 @@ object Defs {
         InsertDef("Echo", listOf("Time", "Feedbk", "Tone"), listOf(.4f, .4f, .6f)),
         InsertDef("Ring Mod", listOf("Freq"), listOf(.4f)),
         InsertDef("Fold", listOf("Fold", "Symm"), listOf(.3f, .5f)),
+        InsertDef("Tape", listOf("Drive", "Wobble", "Tone"), listOf(.3f, .3f, .6f)),
+        InsertDef("Width", listOf("Width", "BassMono"), listOf(.6f, .5f)),
     )
+    fun formatInsert(ty: Int, j: Int, v: Float): String = when {
+        j == 3 -> "${(v * 100).roundToInt()}%"
+        ty == 1 && j == 2 -> if (v < .33f) "LP" else if (v < .66f) "BP" else "HP"
+        ty == 8 && j == 2 -> if (v < .5f) "Trem" else "Pan"
+        ty == 7 -> { val db = ((v - .5f) * 24f).roundToInt(); if (db > 0) "+${db}dB" else "${db}dB" }
+        ty == 9 && j == 0 -> "${(10.0 * Math.pow(60.0, v.toDouble())).roundToInt()}ms"
+        ty == 13 && j == 0 -> "${(v * 250).roundToInt()}%"
+        else -> (v * 100).roundToInt().toString()
+    }
     val resNames = listOf("1/16", "1/32", "1/64")
     val trackDefaults = listOf(.75f, .5f, 0f, 0f)
     val masterParams = listOf("DlyTime", "DlyFdbk", "DlyTone", "DlyLvl", "RevSize", "RevDamp", "RevLvl", "Drive", "Volume",
-        "CmpThr", "CmpRatio", "CmpAtk", "CmpRel", "CmpGain", "CmpMix")
-    val masterDefaults = listOf(.3f, .4f, .6f, .6f, .6f, .4f, .6f, 0f, .8f, .7f, .45f, .6f, .5f, 0f, 0f)
+        "Comp", "Speed", "Key", "CmpMix")
+    val masterDefaults = listOf(.3f, .4f, .6f, .6f, .6f, .4f, .6f, 0f, .8f, .5f, .4f, 0f, 0f)
     val lfoWaves = listOf("Sine", "Triangle", "Saw up", "Saw down", "Square", "S&H", "Random")
     val lfoDivs = listOf("1/32", "1/16", "1/8", "1/4", "1/2", "1 bar", "2 bars", "4 bars", "8 bars")
     fun lfoRate(sync: Boolean, v: Float): String =
@@ -132,7 +149,7 @@ object Defs {
     }
     val chords = listOf("—", "maj", "min", "maj7", "min7", "sus4", "5th", "oct", "7")
     val fmRatios = listOf("0.5", "1", "1.5", "2", "2.5", "3", "3.5", "4", "5", "6", "7", "9")
-    fun usesSample(m: Int) = m == 9 || m == 11
+    fun usesSample(m: Int) = m == 9 || m == 11 || m == 20
     val delaySteps = listOf("1/16", "1/8", "3/16", "1/4", "3/8", "1/2", "3/4", "1/1")
     private val noteNames = listOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
     fun noteName(n: Int) = noteNames[((n % 12) + 12) % 12] + (n / 12 - 1)
@@ -147,11 +164,11 @@ object Defs {
         val name = paramName(machine, i)
         return when {
             i == 13 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "C" else if (p < 0) "L${-p}" else "R$p" }
-            machine == 9 && i == 0 -> { val s = ((v - .5f) * 48).roundToInt(); if (s > 0) "+$s" else "$s" }
-            machine == 9 && (i == 4 || i == 8 || i == 10) -> if (v > .5f) "On" else "Off"
-            machine == 9 && i == 11 -> "${(5.0 * Math.pow(200.0, v.toDouble())).roundToInt()}ms"
-            machine == 9 && i == 5 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Off" else if (p < 0) "LP${-p}" else "HP$p" }
-            machine == 9 && i == 3 -> if (v >= .99f) "Hold" else (v * 100).roundToInt().toString()
+            (machine == 9 || machine == 20) && i == 0 -> { val s = ((v - .5f) * 48).roundToInt(); if (s > 0) "+$s" else "$s" }
+            (machine == 9 || machine == 20) && (i == 4 || i == 8 || i == 10) -> if (v > .5f) "On" else "Off"
+            (machine == 9 || machine == 20) && i == 11 -> "${(5.0 * Math.pow(200.0, v.toDouble())).roundToInt()}ms"
+            (machine == 9 || machine == 20) && i == 5 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Off" else if (p < 0) "LP${-p}" else "HP$p" }
+            (machine == 9 || machine == 20) && i == 3 -> if (v >= .99f) "Hold" else (v * 100).roundToInt().toString()
             name == "Ratio" && machine == 4 -> String.format("%.2f", .5f + v * 7.5f)
             machine == 11 && i == 4 -> { val st = ((v - .5f) * 48).roundToInt(); if (st > 0) "+$st" else "$st" }
             machine == 11 && i == 8 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Stop" else if (p < 0) "<$p" else ">$p" }
@@ -160,19 +177,17 @@ object Defs {
             machine == 18 && i == 0 -> listOf("Saw", "Square", "Reso")[(v * 2.99f).toInt().coerceIn(0, 2)]
             machine == 14 && i == 5 -> if (v > .5f) "On" else "Off"
             machine == 14 && i == 2 -> { val o = ((v - .5f) * 8f); String.format("%+.1f", o) }
-            (machine == 16 || machine == 19) && i == 0 -> vowelName(v)
+            (machine == 16 || machine == 19 || machine == 21) && i == 0 -> vowelName(v)
             (machine == 19 && i == 1) || (machine == 16 && i == 5) -> { val p = ((v - .5f) * 200).roundToInt(); if (p > 0) "+$p" else "$p" }
             else -> (v * 100).roundToInt().toString()
         }
     }
     fun formatMaster(i: Int, v: Float): String = when (i) {
         0 -> delaySteps[(v * 7.99f).toInt().coerceIn(0, 7)]
-        9 -> "${(-40f + v * 40f).roundToInt()}dB"
-        10 -> String.format("%.1f:1", 1.0 * Math.pow(20.0, v.toDouble()))
-        11 -> { val ms = 0.1 * Math.pow(1000.0, v.toDouble()); if (ms < 10) String.format("%.1fms", ms) else "${ms.roundToInt()}ms" }
-        12 -> "${(20.0 * Math.pow(50.0, v.toDouble())).roundToInt()}ms"
-        13 -> "+${(v * 24f).roundToInt()}dB"
-        14 -> if (v <= 0.001f) "Off" else "${(v * 100).roundToInt()}%"
+        9 -> "${(v * 100).roundToInt()}%"
+        10 -> "${(30.0 * Math.pow(800.0 / 30.0, v.toDouble())).roundToInt()}ms"
+        11 -> { val k = (v * 8f).roundToInt(); if (k == 0) "Self" else "T$k" }
+        12 -> if (v <= 0.001f) "Off" else "${(v * 100).roundToInt()}%"
         else -> (v * 100).roundToInt().toString()
     }
 }
@@ -234,7 +249,7 @@ class Project {
     var name = "untitled"
     var bpm = 120f
     var swing = 50f
-    val master = FloatArray(MASTER_PARAMS) { i -> Defs.masterDefaults.getOrElse(i) { .5f } }
+    val master = FloatArray(MASTER_PARAMS) { i -> Defs.masterDefaults.getOrElse(i) { if (i >= 16 && (i - 16) % 4 == 3) 1f else .5f } }
     val tracks = Array(TRACKS) { TrackData() }
     val patterns = Array(PATTERNS) { PatternData() }
     val songPat = ArrayList<Int>()
@@ -266,15 +281,32 @@ class Project {
     fun formatParam(t: Int, i: Int, v: Float): String {
         if (i < 16) return Defs.formatParam(tracks[t].machine, i, v)
         val slot = (i - 16) / 4; val j = (i - 16) % 4
-        val ty = tracks[t].insType[slot]
-        return when {
-            j == 3 -> "${(v * 100).roundToInt()}%"
-            ty == 1 && j == 2 -> if (v < .33f) "LP" else if (v < .66f) "BP" else "HP"
-            ty == 8 && j == 2 -> if (v < .5f) "Trem" else "Pan"
-            ty == 7 -> { val db = ((v - .5f) * 24f).roundToInt(); if (db > 0) "+${db}dB" else "${db}dB" }
-            ty == 9 && j == 0 -> "${(10.0 * Math.pow(60.0, v.toDouble())).roundToInt()}ms"
-            else -> (v * 100).roundToInt().toString()
-        }
+        return Defs.formatInsert(tracks[t].insType[slot], j, v)
+    }
+    // ---------------- master FX chain (master params 16..31)
+    val mfxType = IntArray(4)
+    fun masterParamName(i: Int): String {
+        if (i < Defs.masterParams.size) return Defs.masterParams[i]
+        if (i < 16 || i >= 32) return ""
+        val slot = (i - 16) / 4; val j = (i - 16) % 4
+        val ty = mfxType[slot]
+        if (ty <= 0) return ""
+        return "FX${slot + 1} " + (if (j == 3) "Mix" else Defs.inserts[ty].params.getOrNull(j) ?: return "")
+    }
+    fun masterParamDefault(i: Int): Float {
+        if (i < Defs.masterDefaults.size) return Defs.masterDefaults[i]
+        val slot = (i - 16) / 4; val j = (i - 16) % 4
+        return if (j == 3) 1f else Defs.inserts[mfxType[slot]].defaults.getOrElse(j) { .5f }
+    }
+    fun formatMasterParam(i: Int, v: Float): String =
+        if (i < 16) Defs.formatMaster(i, v) else Defs.formatInsert(mfxType[(i - 16) / 4], (i - 16) % 4, v)
+    fun setMasterFx(slot: Int, type: Int) {
+        mfxType[slot] = type
+        val def = Defs.inserts[type]
+        for (j in 0 until 3) master[16 + slot * 4 + j] = def.defaults.getOrElse(j) { .5f }
+        master[16 + slot * 4 + 3] = 1f
+        for (j in 0 until 4) Native.setMaster(16 + slot * 4 + j, master[16 + slot * 4 + j])
+        Native.setMasterFx(slot, type)
     }
     fun setInsert(t: Int, slot: Int, type: Int) {
         val tr = tracks[t]
@@ -288,7 +320,7 @@ class Project {
     fun destName(d: Int): String = when {
         d < 0 -> "— none —"
         d < 1000 -> { val t = d / DEST_STRIDE; val i = d % DEST_STRIDE; "T${t + 1} ${paramName(t, i).ifEmpty { "(unused)" }}" }
-        else -> "Master ${Defs.masterParams.getOrElse(d - 1000) { "?" }}"
+        else -> "Master ${masterParamName(d - 1000).ifEmpty { "(unused)" }}"
     }
 
     // ---------------- engine sync
@@ -325,6 +357,7 @@ class Project {
     fun pushAll() {
         Native.setBpm(bpm); Native.setSwing(swing)
         for (i in 0 until MASTER_PARAMS) Native.setMaster(i, master[i])
+        for (s in 0 until 4) Native.setMasterFx(s, mfxType[s])
         for (t in 0 until TRACKS) pushTrack(t, true)
         // the engine starts from empty patterns, so only non-empty steps need sending
         Native.clearPatterns()
@@ -391,6 +424,8 @@ class Project {
         }
         o.put("lfos", la)
         o.put("destStride", DEST_STRIDE)
+        o.put("mfx", JSONArray(mfxType.toList()))
+        o.put("masterVer", 2)
         o.put("fxSlots", JSONArray(fxSlots.toList()))
         return o
     }
@@ -402,6 +437,10 @@ class Project {
             pr.bpm = o.optDouble("bpm", 120.0).toFloat()
             pr.swing = o.optDouble("swing", 50.0).toFloat()
             o.optJSONArray("master")?.let { a -> for (i in 0 until minOf(a.length(), MASTER_PARAMS)) pr.master[i] = a.getDouble(i).toFloat() }
+            if (o.optInt("masterVer", 1) < 2) {   // older projects: new compressor starts at defaults, off
+                for (i in 9 until MASTER_PARAMS) pr.master[i] = if (i < Defs.masterDefaults.size) Defs.masterDefaults[i] else if ((i - 16) % 4 == 3) 1f else .5f
+            }
+            o.optJSONArray("mfx")?.let { a -> for (s in 0 until minOf(4, a.length())) pr.mfxType[s] = a.getInt(s).coerceIn(0, Defs.inserts.size - 1) }
             o.optJSONArray("tracks")?.let { ta ->
                 for (t in 0 until minOf(ta.length(), TRACKS)) {
                     val j = ta.getJSONObject(t); val tr = pr.tracks[t]

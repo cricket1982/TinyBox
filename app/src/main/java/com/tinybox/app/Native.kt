@@ -36,6 +36,7 @@ object Native {
     @JvmStatic external fun setLength(pattern: Int, track: Int, len: Int)
     @JvmStatic external fun setRes(pattern: Int, track: Int, res: Int)
     @JvmStatic external fun setInsert(track: Int, slot: Int, type: Int)
+    @JvmStatic external fun setMasterFx(slot: Int, type: Int)
     @JvmStatic external fun clearPatterns()
 
     @JvmStatic external fun noteOn(track: Int, note: Int, vel: Float)

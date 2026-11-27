@@ -159,6 +159,10 @@ JFN(void, setRes)(JNIEnv *, jclass, jint p, jint t, jint res) {
     if (!gEngine || p < 0 || p >= kPatterns || t < 0 || t >= kTracks) return;
     gEngine->patterns[p].res[t] = (uint8_t)std::clamp(res, 0, 2);
 }
+JFN(void, setMasterFx)(JNIEnv *, jclass, jint slot, jint type) {
+    if (!gEngine || slot < 0 || slot > 3) return;
+    gEngine->mfx[slot].type.store(std::clamp(type, 0, INS_COUNT - 1));
+}
 JFN(void, setInsert)(JNIEnv *, jclass, jint t, jint slot, jint type) {
     if (!gEngine || t < 0 || t >= kTracks || slot < 0 || slot > 1) return;
     gEngine->tracks[t].ins[slot].type.store(std::clamp(type, 0, INS_COUNT - 1));

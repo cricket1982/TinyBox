@@ -176,7 +176,7 @@ class MainActivity : Activity() {
                 val opts: List<Pair<Int, String>> = if (g <= TRACKS) {
                     val t = g - 1
                     (0 until TRACK_PARAMS).map { i -> (t * DEST_STRIDE + i) to project.paramName(t, i) }.filter { it.second.isNotEmpty() }
-                } else Defs.masterParams.indices.map { i -> (1000 + i) to Defs.masterParams[i] }
+                } else (0 until MASTER_PARAMS).map { i -> (1000 + i) to project.masterParamName(i) }.filter { it.second.isNotEmpty() }
                 AlertDialog.Builder(this).setTitle(groups[g])
                     .setItems(opts.map { it.second }.toTypedArray()) { _, w ->
                         l.dest[slot] = opts[w].first
@@ -190,6 +190,13 @@ class MainActivity : Activity() {
         val names = Defs.inserts.map { it.name }.toTypedArray()
         AlertDialog.Builder(this).setTitle("Track ${t + 1} insert ${if (slot == 0) "A" else "B"}")
             .setSingleChoiceItems(names, project.tracks[t].insType[slot]) { d, w -> project.setInsert(t, slot, w); d.dismiss(); done() }
+            .setNegativeButton("Cancel", null).show()
+    }
+
+    fun chooseMasterFx(slot: Int, done: () -> Unit) {
+        val names = Defs.inserts.map { it.name }.toTypedArray()
+        AlertDialog.Builder(this).setTitle("Master FX ${slot + 1}")
+            .setSingleChoiceItems(names, project.mfxType[slot]) { d, w -> project.setMasterFx(slot, w); d.dismiss(); done() }
             .setNegativeButton("Cancel", null).show()
     }
 
@@ -258,7 +265,8 @@ class MainActivity : Activity() {
                 val tr = project.tracks[t]
                 decoded[t] = d; peakCaches[t] = null
                 tr.sampleUri = uri.toString(); tr.sampleName = d.name
-                if (!keepSlices || tr.slices.any { it >= d.frames }) tr.slices = AudioLoader.transientSlices(d, tr.sliceSens)
+                if (tr.machine == 20) tr.slices = intArrayOf(0)
+                else if (!keepSlices || tr.slices.any { it >= d.frames }) tr.slices = AudioLoader.transientSlices(d, tr.sliceSens)
                 Native.loadSample(t, d.l, d.r, d.sampleRate.toFloat())
                 Native.setSlices(t, tr.slices)
                 view.invalidate()

@@ -9,10 +9,10 @@ constexpr int kTracks = 8;
 constexpr int kMaxSteps = 128;
 constexpr int kDestStride = 32;   // LFO destination = track * 32 + param
 constexpr int kPatterns = 8;
-constexpr int kMasterParams = 24;
+constexpr int kMasterParams = 40;   // 0..12 master, 16..31 master FX slots (4 x 4)
 enum { TP_LEVEL = 12, TP_PAN = 13, TP_DLY = 14, TP_REV = 15 };
 enum { MP_DTIME = 0, MP_DFB, MP_DTONE, MP_DLEVEL, MP_RSIZE, MP_RDAMP, MP_RLEVEL, MP_DRIVE, MP_VOLUME,
-       MP_CTHR, MP_CRATIO, MP_CATK, MP_CREL, MP_CGAIN, MP_CMIX };
+       MP_CAMT, MP_CSPEED, MP_CKEY, MP_CMIX, MP_FX0 = 16 };
 // performance FX ids
 enum { FX_REP4 = 0, FX_REP8, FX_REP16, FX_REP32, FX_REVERSE, FX_TAPESTOP, FX_GATE, FX_CRUSH, FX_DUB, FX_FREEZE, FX_LOFI, FX_FILTER,
        FX_REP8T, FX_REP16T, FX_GLITCH, FX_HALF, FX_PUMP, FX_KILLLOW, FX_KILLMID, FX_KILLHIGH, FX_RING, FX_FLANGE, FX_DIST, FX_MONO, FX_WIDE,
@@ -153,6 +153,7 @@ public:
     double songPosNow() const { return songPos; }
     std::atomic<float> peak{0.f};
     std::atomic<float> compGR{0.f};      // dB of gain reduction
+    Insert mfx[4];                       // master effects chain
     std::atomic<bool> fxOn[32];
     Lfo lfos[kLfos];
     std::atomic<float> lfoVal[kLfos];
@@ -212,5 +213,6 @@ private:
     float mixFilter = 0, mixCrush = 0, mixGate = 0, mixLofi = 0, gateS = 1.f; double gatePh = 0;
     SVF pfL, pfR; float crL = 0, crR = 0; int crC = 0;
     std::vector<float> wowL, wowR; int ww = 0; float wowPh = 0, flutPh = 0; OnePole lofiL, lofiR;
-    float compEnv = 0.f;
+    float compEnv = 0.f, compGRs = 0.f;
+    float keyBuf[256];
 };

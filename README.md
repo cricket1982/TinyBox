@@ -36,6 +36,23 @@ To build on GitHub and install on the tablet without a cable, see **GITHUB_SETUP
 
 Every track also has **Level, Pan, Delay send and Reverb send**. The master section has a tempo-synced ping-pong delay, a reverb, drive and a soft limiter.
 
+## v0.7
+- **FX page = master effects chain:** 4 slots in series on the master. Tap a slot to choose its effect from the same library as the track inserts, plus two new types: **Tape** (saturation, wobble, tone) and **Width** (stereo width, bass mono). Each slot has 3 controls and Mix, and every control can be an LFO destination. The old hold-to-play performance pads are gone.
+- **Pump compressor:** there are 4 knobs, on the FX page and in the MASTER knobs.
+  - **Comp** sets the amount (threshold, ratio and automatic make-up together).
+  - **Speed** sets the release, from 30 to 800 ms. Short gives obvious pumping, long gives glue.
+  - **Key** chooses what drives it: the whole mix (Self) or one track. **Key T1** with your kick on track 1 gives classic sidechain ducking.
+  - **CmpMix** blends it in. 0 is off; partway gives parallel compression.
+- **Sampler:** a one-shot drum sampler. Load a sample from the PADS page. Start and Length trim it, shown on the waveform. Pitch ±24 semitones, and each step's NOTE also transposes (C4 = original). There's also Decay, LP/HP filter, Reverse, Drive, Choke and Gain, plus Gate and Release for hold-to-play.
+- **PM Voice:** a physical model of the vocal tract (Kelly–Lochbaum waveguide, like Pink Trombone). A glottal pulse with breath noise passes through a tube whose shape morphs between measured vowel profiles.
+  - **Vowel** (A E I O U): the tube is tuned so its formants match real speech.
+  - **Lips**: rounding, for darker, more hummed vowels.
+  - **Throat**: tract length, i.e. voice size.
+  - **Tension**: vocal-fold tightness, from soft to pressed.
+  - **Breath**: aspiration noise.
+  - **Vibrato** and **Jitter** (natural pitch wander).
+  - Plus an ADSR envelope and Drive. It's 8-voice polyphonic, so chords work.
+
 ## Live recording (v0.6)
 - **Timing:** hits are timed from the touch's own timestamp, and the audio stream reports exactly when each sample reaches the speaker. Touch delay and output delay are both measured rather than guessed. What you record is where you heard the beat when you hit the pad.
 - **Swing:** taken into account, so off-beat hits don't get pushed late on playback.

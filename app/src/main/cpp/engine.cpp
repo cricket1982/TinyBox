@@ -17,7 +17,8 @@ Engine::Engine(float sampleRate) : sr(sampleRate) {
     }
     for (float &m : master) m = 0.5f;
     master[MP_DLEVEL] = 0.6f; master[MP_RLEVEL] = 0.6f; master[MP_DRIVE] = 0.f; master[MP_VOLUME] = 0.8f;
-    master[MP_CTHR] = 0.7f; master[MP_CRATIO] = 0.45f; master[MP_CATK] = 0.6f; master[MP_CREL] = 0.5f; master[MP_CGAIN] = 0.f; master[MP_CMIX] = 0.f;
+    master[MP_CAMT] = 0.5f; master[MP_CSPEED] = 0.4f; master[MP_CKEY] = 0.f; master[MP_CMIX] = 0.f;
+    for (int i = 0; i < 4; ++i) master[MP_FX0 + i * 4 + 3] = 1.f;
     for (auto &f : fxOn) f.store(false);
     for (auto &v : lfoVal) v.store(0.f);
     std::memset(trackMod, 0, sizeof(trackMod)); std::memset(masterMod, 0, sizeof(masterMod));
@@ -36,6 +37,7 @@ void Engine::setSampleRate(float s) {
     for (auto &tr : tracks) if (tr.mach) tr.mach->sr = sr;
     delay.init(sr); reverb.init(sr);
     for (auto &tr : tracks) { tr.ins[0].prepare(sr); tr.ins[1].prepare(sr); }
+    for (auto &m : mfx) m.prepare(sr);
     dcL.setLP(8.f, sr); dcR.setLP(8.f, sr);
     pbL.assign((int)(sr * 4.f), 0.f); pbR.assign((int)(sr * 4.f), 0.f); pw = 0;
     wowL.assign(4096, 0.f); wowR.assign(4096, 0.f); ww = 0;
@@ -316,6 +318,8 @@ void Engine::process(float *out, int frames) {
         std::memset(dlyL, 0, sizeof(float) * n); std::memset(dlyR, 0, sizeof(float) * n);
         std::memset(revL, 0, sizeof(float) * n); std::memset(revR, 0, sizeof(float) * n);
 
+        const int keyTrack = (int)std::lround(mEff[MP_CKEY] * 8.f) - 1;   // -1 = master itself
+        std::memset(keyBuf, 0, sizeof(float) * n);
         bool anySolo = false;
         for (auto &tr : tracks) anySolo |= tr.solo.load(std::memory_order_relaxed);
         for (int t = 0; t < kTracks; ++t) {
@@ -354,6 +358,7 @@ void Engine::process(float *out, int frames) {
                 gL += dL; gR += dR; gD += dD; gV += dV;
                 float l = tbufL[i] * gL, r = tbufR[i] * gR;
                 float a = std::max(std::fabs(l), std::fabs(r)); if (a > tpk) tpk = a;
+                if (t == keyTrack) keyBuf[i] = std::max(std::fabs(tbufL[i]), std::fabs(tbufR[i])) * lv;
                 busL[i] += l; busR[i] += r;
                 dlyL[i] += l * gD; dlyR[i] += r * gD;
                 revL[i] += l * gV; revR[i] += r * gV;
@@ -377,11 +382,13 @@ void Engine::process(float *out, int frames) {
         const float drv = 1.f + mEff[MP_DRIVE] * 6.f;
         const float vol = mEff[MP_VOLUME] * mEff[MP_VOLUME] * 1.25f;
         // compressor settings
-        const float cThr = -40.f + mEff[MP_CTHR] * 40.f;
-        const float cRatio = expo(mEff[MP_CRATIO], 1.f, 20.f), cSlope = 1.f - 1.f / cRatio;
-        const float cAtk = 1.f - std::exp(-1.f / (expo(mEff[MP_CATK], 0.0001f, 0.1f) * sr));
-        const float cRel = 1.f - std::exp(-1.f / (expo(mEff[MP_CREL], 0.02f, 1.f) * sr));
-        const float cMake = mEff[MP_CGAIN] * 24.f, cMix = mEff[MP_CMIX];
+        // pumping bus compressor: Amount sets threshold + ratio + auto make-up, Speed sets release
+        const float cAmt = mEff[MP_CAMT];
+        const float cThr = -4.f - cAmt * 30.f;
+        const float cSlope = 1.f - 1.f / (2.f + cAmt * 18.f);
+        const float cAtk = 1.f - std::exp(-1.f / (0.002f * sr));
+        const float cRel = 1.f - std::exp(-1.f / (expo(mEff[MP_CSPEED], 0.03f, 0.8f) * sr));
+        const float cMake = cAmt * 9.f, cMix = mEff[MP_CMIX];
         float grMax = 0.f;
         // performance FX: detect newly pressed buffer effects (repeat / reverse / tape stop)
         const int pbSize = (int)pbL.size();
@@ -569,17 +576,22 @@ void Engine::process(float *out, int frames) {
                 side *= (1.f - mixMono) * (1.f + mixWide);
                 L = mid + side; R = mid - side;
             }
-            // ---- compressor
+            // ---- master FX chain (4 slots), processed per sample through a 1-sample block
+            if (mfx[0].type.load(std::memory_order_relaxed) | mfx[1].type.load(std::memory_order_relaxed) |
+                mfx[2].type.load(std::memory_order_relaxed) | mfx[3].type.load(std::memory_order_relaxed)) {
+                for (int s2 = 0; s2 < 4; ++s2) mfx[s2].process(&L, &R, 1, mEff + MP_FX0 + s2 * 4);
+            }
+            // ---- pumping compressor (peak detector, smoothed gain reduction; optional key track)
             {
-                float x = std::max(std::fabs(L), std::fabs(R));
-                compEnv += (x - compEnv) * (x > compEnv ? cAtk : cRel);
-                float lvl = 20.f * std::log10(compEnv + 1e-9f);
-                float over = lvl - cThr, gr = 0.f;
-                if (over >= 3.f) gr = over * cSlope;
-                else if (over > -3.f) gr = (over + 3.f) * (over + 3.f) / 12.f * cSlope;
-                if (gr > grMax) grMax = gr;
+                float x = keyTrack >= 0 ? keyBuf[i] : std::max(std::fabs(L), std::fabs(R));
+                float lvl = 20.f * std::log10(x + 1e-9f);
+                float over = lvl - cThr, target = 0.f;
+                if (over >= 3.f) target = over * cSlope;
+                else if (over > -3.f) target = (over + 3.f) * (over + 3.f) / 12.f * cSlope;
+                compGRs += (target - compGRs) * (target > compGRs ? cAtk : cRel);
+                if (compGRs > grMax) grMax = compGRs;
                 if (cMix > 0.f) {
-                    float g = std::pow(10.f, (cMake - gr) / 20.f);
+                    float g = std::pow(10.f, (cMake - compGRs) / 20.f);
                     L = L + (L * g - L) * cMix; R = R + (R * g - R) * cMix;
                 }
             }

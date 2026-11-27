@@ -8,7 +8,7 @@
 
 enum InsertType {
     INS_OFF = 0, INS_FILTER, INS_DRIVE, INS_CRUSH, INS_CHORUS, INS_PHASER, INS_COMP, INS_EQ,
-    INS_TREM, INS_ECHO, INS_RING, INS_FOLD, INS_COUNT
+    INS_TREM, INS_ECHO, INS_RING, INS_FOLD, INS_TAPE, INS_WIDTH, INS_COUNT
 };
 
 struct Insert {
@@ -58,6 +58,8 @@ struct Insert {
                 case INS_FILTER: { float fc = expo(p[0], 30.f, 18000.f), q = 0.6f + p[1] * 10.f; fl.set(fc, q, sr); fr.set(fc, q, sr); break; }
                 case INS_DRIVE: tl.setLP(expo(p[1], 800.f, 18000.f), sr); tr.a = tl.a; break;
                 case INS_ECHO: tl.setLP(expo(p[2], 600.f, 16000.f), sr); tr.a = tl.a; break;
+                case INS_TAPE: tl.setLP(expo(p[2], 1500.f, 18000.f), sr); tr.a = tl.a; break;
+                case INS_WIDTH: fl.set(150.f, 0.7f, sr); break;
                 case INS_EQ: eqLoL.set(220.f, 0.6f, sr); eqLoR.set(220.f, 0.6f, sr); eqHiL.set(3500.f, 0.6f, sr); eqHiR.set(3500.f, 0.6f, sr); break;
                 default: break;
             }
@@ -141,6 +143,24 @@ struct Insert {
                 case INS_RING: {
                     ringPh += expo(p[0], 20.f, 2000.f) / sr; if (ringPh >= 1.f) ringPh -= 1.f;
                     float c = std::sin(kTwoPi * ringPh); wl = dl * c; wr = dr * c;
+                    break;
+                }
+                case INS_TAPE: {   // saturation + wow/flutter + tone
+                    lfo += 0.6f / sr; if (lfo >= 1.f) lfo -= 1.f;
+                    env += 7.3f / sr; if (env >= 1.f) env -= 1.f;
+                    float d = (0.003f + p[1] * 0.004f * (0.5f + 0.5f * std::sin(kTwoPi * lfo)) + p[1] * 0.0004f * std::sin(kTwoPi * env)) * sr;
+                    float g = 1.f + p[0] * 6.f, gn = softclip(g);
+                    bl[w] = softclip(dl * g) / gn; br[w] = softclip(dr * g) / gn;
+                    wl = tl.lp(readBuf(bl, d)); wr = tr.lp(readBuf(br, d));
+                    w = (w + 1) & (BUF - 1);
+                    break;
+                }
+                case INS_WIDTH: {
+                    float mid = (dl + dr) * 0.5f, side = (dl - dr) * 0.5f * (p[0] * 2.5f);
+                    // bass stays mono below ~150 Hz when Bass Mono is up
+                    float sideLow = fl.lp(side);
+                    side -= sideLow * p[1];
+                    wl = mid + side; wr = mid - side;
                     break;
                 }
                 case INS_FOLD: {
