@@ -36,6 +36,16 @@ To build on GitHub and install on the tablet without a cable, see **GITHUB_SETUP
 
 Every track also has **Level, Pan, Delay send and Reverb send**. The master section has a tempo-synced ping-pong delay, a reverb, drive and a soft limiter.
 
+## v0.8
+- **Sample browser:** on Sampler, Slicer and Granular tracks, **BROWSE** opens your samples folder. You choose the folder once and it's remembered; use *Change folder…* to switch. Tap a subfolder to open it, or a sample to load it. **◀ / ▶** step to the previous or next sample in the same folder, and every sample plays automatically when it loads.
+- **SOUND 2 tab:** a second page of 16 knobs for the deep engines. Second-page knobs can be p-locked and used as LFO destinations.
+- **FM4:** 4-operator FM.
+  - **Page 1:** 8 algorithms (stack, Y-branch, dual mod, two stacks, one→three, pair+2, stack+1, additive), op-4 Feedback, Ratio and Level for each operator (ratios 0.5 to 16), Vibrato and Drive.
+  - **Page 2:** Decay and Sustain for each operator, shared Attack and Release, operator Detune, Velocity sensitivity (velocity → modulation depth), and a low-pass filter with its own envelope amount and decay. Cutoff at 100% means no filter.
+- **Analog:** dual-oscillator virtual analog.
+  - **Page 1:** Osc1 and Osc2 waves (morph saw → square → triangle → sine), Osc2 tune (±24 semitones) and fine, oscillator mix, Sub, Noise, Cutoff, Reso, filter envelope amount (±), Drive and Glide.
+  - **Page 2:** filter ADSR, amp ADSR, filter type (LP12, LP24, BP, HP), key tracking, PWM, hard Sync (osc2 to osc1), Unison (1–3× detuned osc1), velocity → filter, velocity → amp, and Vibrato.
+
 ## v0.7
 - **FX page = master effects chain:** 4 slots in series on the master. Tap a slot to choose its effect from the same library as the track inserts, plus two new types: **Tape** (saturation, wobble, tone) and **Width** (stereo width, bass mono). Each slot has 3 controls and Mix, and every control can be an LFO destination. The old hold-to-play performance pads are gone.
 - **Pump compressor:** there are 4 knobs, on the FX page and in the MASTER knobs.

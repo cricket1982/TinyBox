@@ -9,7 +9,7 @@
 #include <cstring>
 
 constexpr int kMachParams = 12;
-constexpr int kTrackParams = 24; // 12 machine + level, pan, delay send, reverb send + 2 inserts x (3 params + mix)
+constexpr int kTrackParams = 48; // 0-11 sound, 12-15 level/pan/delay/reverb, 16-23 inserts, 24-39 sound page 2
 
 enum MachineId {
     M_BD = 0, M_SD, M_HH, M_CP, M_FM, M_CB,
@@ -19,6 +19,7 @@ enum MachineId {
     M_CHIP, M_KSDRUM, M_VOX,
     M_WEST, M_PD, M_FORMANT,
     M_ONESHOT, M_VOICE,
+    M_FM4, M_ANALOG,
     M_COUNT
 };
 
@@ -1326,6 +1327,214 @@ public:
 };
 constexpr float PMVoice::kArea[5][10];
 
+// ---------------------------------------------------------------- FM4: 4-operator FM (DX style)
+// page 1: 0 Algo 1 Feedback 2..9 Op1..4 Ratio/Level 10 Vibrato 11 Drive
+// page 2: 24..31 Op1..4 Decay/Sustain 32 Attack 33 Release 34 Detune 35 VelSens 36 Cutoff 37 Reso 38 FEnv 39 FEnvDec
+class FM4 : public Machine {
+    struct V { int note = -1; ADSR op[4]; ADSR env; float vel = 0, gateLeft = -1, freq = 0, ph[4] = {0, 0, 0, 0}, fb1 = 0, fb2 = 0, fenv = 0; int age = 0; SVF f; };
+    static constexpr int NV = 8;
+    V v[NV]; float lfo = 0; int ctr = 0;
+    static constexpr float kRatio[15] = {0.5f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f, 9.f, 10.f, 11.f, 12.f, 14.f, 16.f};
+    // algorithm: for each op (0..3) a bitmask of the ops that modulate it, plus a carrier mask
+    static constexpr uint8_t kMod[8][4] = {
+        {0x2, 0x4, 0x8, 0}, {0x2, 0xC, 0, 0}, {0x6, 0x8, 0, 0}, {0x2, 0, 0x8, 0},
+        {0x8, 0x8, 0x8, 0}, {0x2, 0, 0, 0}, {0, 0x4, 0x8, 0}, {0, 0, 0, 0}};
+    static constexpr uint8_t kCar[8] = {0x1, 0x1, 0x1, 0x5, 0x7, 0xD, 0x3, 0xF};
+    void start(int note, float vel, float gate) {
+        V *x = allocVoice(v);
+        x->note = note; x->vel = vel; x->gateLeft = gate; x->env.stage = 1; x->age = 0; x->freq = mtof((float)note); x->fenv = 1.f;
+        for (auto &o : x->op) o.stage = 1;
+        if (x->env.env < 0.001f) { for (float &p : x->ph) p = 0; x->fb1 = x->fb2 = 0; x->f.reset(); for (auto &o : x->op) o.env = 0; }
+    }
+public:
+    void trigger(const TrigParams &t) override {
+        for (int k = 0; k < t.nnotes; ++k) if (t.notes[k] >= 0) start(std::clamp(t.notes[k], 0, 127), t.vel, t.gateSamples);
+    }
+    void noteOff(int note) override {
+        for (auto &x : v) if (x.note == note && x.env.stage && x.env.stage < 3 && x.gateLeft < 0) { x.env.stage = 3; for (auto &o : x.op) if (o.stage) o.stage = 3; }
+    }
+    void allOff() override { for (auto &x : v) if (x.env.stage) { x.env.stage = 3; for (auto &o : x.op) if (o.stage) o.stage = 3; } }
+    void render(float *l, float *r, int n, const float *p) override {
+        bool any = false; for (auto &x : v) any |= x.env.stage != 0;
+        if (!any) return;
+        const int algo = std::clamp((int)(p[0] * 7.99f), 0, 7);
+        const float fb = p[1] * 1.2f;
+        float ratio[4], lvl[4];
+        for (int k = 0; k < 4; ++k) { ratio[k] = kRatio[std::clamp((int)(p[2 + k * 2] * 14.99f), 0, 14)]; float lv = p[3 + k * 2]; lvl[k] = lv * lv; }
+        const float det = p[34] * 12.f;   // cents spread over ops 2..4
+        float dm[4] = {1.f, std::pow(2.f, det / 1200.f), std::pow(2.f, -det / 1200.f), std::pow(2.f, det * 0.5f / 1200.f)};
+        const float vib = p[10] * 0.6f, velS = p[35];
+        const float drive = p[11], gg = 1.f + drive * 4.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        const bool filt = p[36] < 0.99f;
+        const float cut = expo(p[36], 60.f, 18000.f), q = 0.5f + p[37] * 8.f, fea = p[38] * 6.f;
+        const float feC = decayCoef(expo(p[39], 0.01f, 3.f), sr);
+        const float atk = expo(p[32], 0.001f, 3.f), rel = expo(p[33], 0.01f, 6.f);
+        const uint8_t car = kCar[algo];
+        int ncar = 0; for (int k = 0; k < 4; ++k) ncar += (car >> k) & 1;
+        const float carNorm = 0.4f / std::sqrt((float)ncar);
+        for (auto &x : v) if (x.env.stage) {
+            for (int k = 0; k < 4; ++k) x.op[k].set(atk, expo(p[24 + k * 2], 0.01f, 6.f), p[25 + k * 2], rel, sr);
+            x.env.set(atk, 6.f, 1.f, rel, sr);
+        }
+        for (int i = 0; i < n; ++i) {
+            lfo += 5.2f / sr; if (lfo >= 1.f) lfo -= 1.f;
+            const float vm = vib > 0.f ? std::pow(2.f, vib * std::sin(kTwoPi * lfo) / 12.f) : 1.f;
+            const bool upd = (ctr++ & 15) == 0;
+            float out = 0.f;
+            for (auto &x : v) {
+                if (!x.env.stage) continue;
+                ++x.age;
+                if (x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.env.stage < 3) { x.env.stage = 3; for (auto &o : x.op) if (o.stage) o.stage = 3; } }
+                x.env.tick();
+                float e[4], o[4];
+                bool alive = false;
+                for (int k = 0; k < 4; ++k) { e[k] = x.op[k].tick(); if (((car >> k) & 1) && x.op[k].stage) alive = true; }
+                if (!alive) { x.env.stage = 0; continue; }
+                const float velMod = 1.f - velS + velS * x.vel;
+                const float f = x.freq * vm / sr;
+                for (int k = 3; k >= 0; --k) {
+                    float m = 0.f;
+                    for (int j = k + 1; j < 4; ++j) if ((kMod[algo][k] >> j) & 1) m += o[j];
+                    if (k == 3) m += fb * (x.fb1 + x.fb2) * 0.5f;
+                    x.ph[k] += f * ratio[k] * dm[k]; x.ph[k] -= std::floor(x.ph[k]);
+                    float s = fsin2pi(x.ph[k] + m * 0.63662f);   // = sin(2pi*ph + 4m)
+                    bool isCar = (car >> k) & 1;
+                    o[k] = s * e[k] * lvl[k] * (isCar ? 1.f : velMod);
+                    if (k == 3) { x.fb2 = x.fb1; x.fb1 = o[3]; }
+                }
+                float sum = 0.f;
+                for (int k = 0; k < 4; ++k) if ((car >> k) & 1) sum += o[k];
+                sum *= carNorm * x.vel;
+                if (filt) {
+                    if (upd) x.f.set(cut * std::pow(2.f, fea * x.fenv), q, sr);
+                    sum = x.f.lp(sum);
+                    x.fenv *= feC;
+                }
+                out += sum;
+            }
+            out = softclip(out * gg) / gn;
+            l[i] += out; r[i] += out;
+        }
+    }
+};
+constexpr float FM4::kRatio[15];
+constexpr uint8_t FM4::kMod[8][4];
+constexpr uint8_t FM4::kCar[8];
+
+// ---------------------------------------------------------------- Analog: dual-oscillator VA with filter + amp envelopes
+// page 1: 0 Osc1 Wave 1 Osc2 Wave 2 Osc2 Tune 3 Osc2 Fine 4 Osc Mix 5 Sub 6 Noise 7 Cutoff 8 Reso 9 FEnv(bipolar) 10 Drive 11 Glide
+// page 2: 24-27 Filter ADSR, 28-31 Amp ADSR, 32 FiltType 33 KeyTrack 34 PWM 35 Sync 36 Unison 37 Vel>Filter 38 Vel>Amp 39 Vibrato
+class Analog : public Machine {
+    struct V {
+        int note = -1; ADSR fenv, env; float vel = 0, gateLeft = -1, freq = 0, target = 0;
+        float p1[3] = {0, 0.33f, 0.66f}, p2 = 0, ps = 0; int age = 0; SVF f1, f2; float tri1[3] = {0, 0, 0}, tri2 = 0;
+    };
+    static constexpr int NV = 8;
+    V v[NV]; float lfo = 0, pwmLfo = 0, lastFreq = 0; int ctr = 0; Rng rng{5551};
+    void start(int note, float vel, float gate) {
+        V *x = allocVoice(v);
+        x->note = note; x->vel = vel; x->gateLeft = gate; x->age = 0;
+        x->target = mtof((float)note);
+        x->freq = (glide > 0.f && lastFreq > 0.f) ? lastFreq : x->target;
+        lastFreq = x->target;
+        if (x->env.env < 0.001f) { x->f1.reset(); x->f2.reset(); x->p2 = 0; x->ps = 0; x->fenv.env = 0; }
+        x->env.stage = 1; x->fenv.stage = 1;
+    }
+    float glide = 0.f;
+    // morphing oscillator: saw -> square (pulse width pw) -> triangle -> sine
+    static inline float shape(float ph, float dt, float w, float pw, float &triState) {
+        float seg = clampf(w, 0.f, 1.f) * 3.f;
+        float saw = 2.f * ph - 1.f - polyblep(ph, dt);
+        float p2 = ph + (1.f - pw); if (p2 >= 1.f) p2 -= 1.f;
+        float sq = (ph < pw ? 1.f : -1.f) + polyblep(ph, dt) - polyblep(p2, dt);
+        if (seg < 1.f) return saw + (sq - saw) * seg;
+        // leaky-integrated square = band-limited triangle
+        triState = triState * 0.999f + sq * dt * 4.f;
+        float tri = triState;
+        if (seg < 2.f) return sq + (tri - sq) * (seg - 1.f);
+        float sn = std::sin(kTwoPi * ph);
+        return tri + (sn - tri) * (seg - 2.f);
+    }
+public:
+    void trigger(const TrigParams &t) override {
+        glide = t.p[11];
+        for (int k = 0; k < t.nnotes; ++k) if (t.notes[k] >= 0) start(std::clamp(t.notes[k], 0, 127), t.vel, t.gateSamples);
+    }
+    void noteOff(int note) override {
+        for (auto &x : v) if (x.note == note && x.env.stage && x.env.stage < 3 && x.gateLeft < 0) { x.env.stage = 3; x.fenv.stage = 3; }
+    }
+    void allOff() override { for (auto &x : v) if (x.env.stage) { x.env.stage = 3; x.fenv.stage = 3; } }
+    void render(float *l, float *r, int n, const float *p) override {
+        bool any = false; for (auto &x : v) any |= x.env.stage != 0;
+        if (!any) return;
+        glide = p[11];
+        const float w1 = p[0], w2 = p[1];
+        const float semi2 = std::round((p[2] - 0.5f) * 48.f), fine2 = (p[3] - 0.5f) * 100.f;
+        const float m2 = std::pow(2.f, (semi2 * 100.f + fine2) / 1200.f);
+        const float mix = p[4], sub = p[5], noise = p[6] * 0.7f;
+        const float cut = expo(p[7], 30.f, 18000.f), q = 0.5f + p[8] * 9.f, fAmt = (p[9] - 0.5f) * 2.f * 7.f;
+        const float drive = p[10], gg = 1.f + drive * 5.f, gn = drive > 0.f ? softclip(gg) : 1.f;
+        const float glideC = glide > 0.001f ? 1.f - std::exp(-1.f / (expo(glide, 0.005f, 2.f) * sr)) : 1.f;
+        const int ftype = std::clamp((int)(p[32] * 3.99f), 0, 3);   // 0 LP12 1 LP24 2 BP 3 HP
+        const float keyT = p[33];
+        const float pwmAmt = p[34];
+        const bool sync = p[35] > 0.5f;
+        const int uni = 1 + std::clamp((int)(p[36] * 2.99f), 0, 2);
+        const float uniDet = p[36] * 0.012f;
+        const float velF = p[37] * 3.f, velA = p[38];
+        const float vib = p[39] * 0.6f;
+        for (auto &x : v) if (x.env.stage) {
+            x.fenv.set(expo(p[24], 0.001f, 4.f), expo(p[25], 0.01f, 6.f), p[26], expo(p[27], 0.01f, 6.f), sr);
+            x.env.set(expo(p[28], 0.001f, 4.f), expo(p[29], 0.01f, 6.f), p[30], expo(p[31], 0.01f, 8.f), sr);
+        }
+        const float uniNorm = 1.f / std::sqrt((float)uni);
+        for (int i = 0; i < n; ++i) {
+            lfo += 5.f / sr; if (lfo >= 1.f) lfo -= 1.f;
+            pwmLfo += 0.6f / sr; if (pwmLfo >= 1.f) pwmLfo -= 1.f;
+            const float vm = vib > 0.f ? std::pow(2.f, vib * std::sin(kTwoPi * lfo) / 12.f) : 1.f;
+            const float pw = 0.5f - pwmAmt * 0.42f * (0.5f + 0.5f * std::sin(kTwoPi * pwmLfo));
+            const bool upd = (ctr++ & 15) == 0;
+            float out = 0.f;
+            for (auto &x : v) {
+                if (!x.env.stage) continue;
+                ++x.age;
+                if (x.gateLeft >= 0.f) { x.gateLeft -= 1.f; if (x.gateLeft < 0.f && x.env.stage < 3) { x.env.stage = 3; x.fenv.stage = 3; } }
+                float ae = x.env.tick(), fe = x.fenv.tick();
+                if (!x.env.stage) continue;
+                x.freq += (x.target - x.freq) * glideC;
+                const float base = x.freq * vm / sr;
+                // osc 1 (+ unison copies)
+                float o1 = 0.f; bool wrapped = false;
+                for (int u = 0; u < uni; ++u) {
+                    float d = base * (1.f + (u == 0 ? 0.f : (u == 1 ? uniDet : -uniDet)));
+                    x.p1[u] += d; if (x.p1[u] >= 1.f) { x.p1[u] -= 1.f; if (u == 0) wrapped = true; }
+                    o1 += shape(x.p1[u], d, w1, pw, x.tri1[u]);
+                }
+                o1 *= uniNorm;
+                // osc 2 (optionally hard-synced to osc 1)
+                float d2 = base * m2;
+                if (sync && wrapped) x.p2 = x.p1[0] * m2 - std::floor(x.p1[0] * m2);
+                else { x.p2 += d2; if (x.p2 >= 1.f) x.p2 -= 1.f; }
+                float o2 = shape(x.p2, d2, w2, pw, x.tri2);
+                x.ps += base * 0.5f; if (x.ps >= 1.f) x.ps -= 1.f;
+                float s = o1 * (1.f - mix) + o2 * mix + (x.ps < 0.5f ? 1.f : -1.f) * sub + rng.next() * noise;
+                if (upd) {
+                    float oct = fAmt * fe + keyT * (x.note - 60) / 12.f + velF * (x.vel - 0.5f);
+                    float fc = cut * std::pow(2.f, oct);
+                    x.f1.set(fc, ftype == 1 ? q * 0.7f : q, sr); x.f2.set(fc, 0.6f, sr);
+                }
+                float lo, bp, hi;
+                x.f1.proc(s * 0.25f, lo, bp, hi);
+                float y = ftype == 0 ? lo : ftype == 1 ? x.f2.lp(lo) : ftype == 2 ? bp * x.f1.k : hi;
+                float va = 1.f - velA + velA * x.vel;
+                out += y * ae * va;
+            }
+            out = softclip(out * gg) / gn;
+            l[i] += out; r[i] += out;
+        }
+    }
+};
+
 inline Machine *makeMachine(int id, float sr, SampleSlot *slot) {
     Machine *m = nullptr;
     switch (id) {
@@ -1350,6 +1559,8 @@ inline Machine *makeMachine(int id, float sr, SampleSlot *slot) {
         case M_FORMANT: m = new FormantSynth(); break;
         case M_ONESHOT: { auto *s = new Slicer(); s->slot = slot; s->oneShot = true; m = s; break; }
         case M_VOICE: m = new PMVoice(); break;
+        case M_FM4: m = new FM4(); break;
+        case M_ANALOG: m = new Analog(); break;
         case M_SYNTH: default: m = new PolySynth(); break;
     }
     m->sr = sr;

@@ -69,3 +69,12 @@ inline float polyblep(float t, float dt) {
     if (t > 1.f - dt) { t = (t - 1.f) / dt; return t * t + t + t + 1.f; }
     return 0.f;
 }
+
+// fast sin(2*pi*t) for any t (parabolic approximation + one refinement, max error ~0.001)
+inline float fsin2pi(float t) {
+    t -= std::floor(t);
+    float x = 2.f * t - 1.f;          // -1..1, sin(2pi t) = -sin(pi x)
+    float y = 4.f * x * (1.f - std::fabs(x));
+    y = 0.225f * (y * std::fabs(y) - y) + y;
+    return -y;
+}

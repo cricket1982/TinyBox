@@ -7,13 +7,14 @@ import kotlin.math.roundToInt
 const val TRACKS = 8
 const val MAX_STEPS = 128
 const val PATTERNS = 8
-const val TRACK_PARAMS = 24   // 12 sound + level/pan/delay/reverb + 2 inserts x (3 + mix)
-const val DEST_STRIDE = 32
+const val TRACK_PARAMS = 48   // 0-11 sound, 12-15 level/pan/delay/reverb, 16-23 inserts, 24-39 sound page 2
+const val DEST_STRIDE = 64
 const val MASTER_PARAMS = 40   // 0..12 master + compressor, 16..31 master FX chain (4 slots x 4)
 
 enum class Kind { DRUM, SLICER, SYNTH, GRAIN }
 
-class MachineDef(val name: String, val short: String, val kind: Kind, val params: List<String>, val defaults: List<Float>)
+class MachineDef(val name: String, val short: String, val kind: Kind, val params: List<String>, val defaults: List<Float>,
+                 val params2: List<String> = listOf(), val defaults2: List<Float> = listOf())
 
 object Defs {
     val machines = listOf(
@@ -83,9 +84,21 @@ object Defs {
         MachineDef("PM Voice", "VOC", Kind.SYNTH,
             listOf("Vowel", "Lips", "Throat", "Tension", "Breath", "Vibrato", "Attack", "Decay", "Sustain", "Release", "Jitter", "Drive"),
             listOf(0f, 0f, .4f, .5f, .15f, .25f, .08f, .5f, .8f, .35f, .3f, 0f)),
+        MachineDef("FM4", "FM4", Kind.SYNTH,
+            listOf("Algo", "Feedbk", "Op1 Rat", "Op1 Lvl", "Op2 Rat", "Op2 Lvl", "Op3 Rat", "Op3 Lvl", "Op4 Rat", "Op4 Lvl", "Vibrato", "Drive"),
+            listOf(.05f, .1f, .1f, .85f, .1f, .5f, .17f, .3f, .1f, .2f, 0f, 0f),
+            listOf("Op1 Dec", "Op1 Sus", "Op2 Dec", "Op2 Sus", "Op3 Dec", "Op3 Sus", "Op4 Dec", "Op4 Sus",
+                   "Attack", "Release", "Detune", "VelSens", "Cutoff", "Reso", "FEnv", "FEnvDec"),
+            listOf(.5f, .7f, .4f, .4f, .35f, .2f, .3f, .1f, .02f, .35f, .1f, .5f, 1f, .2f, 0f, .4f)),
+        MachineDef("Analog", "ANA", Kind.SYNTH,
+            listOf("Osc1", "Osc2", "Tune2", "Fine2", "Mix", "Sub", "Noise", "Cutoff", "Reso", "FEnv", "Drive", "Glide"),
+            listOf(0f, 0f, .5f, .55f, .5f, 0f, 0f, .45f, .2f, .75f, 0f, 0f),
+            listOf("F Atk", "F Dec", "F Sus", "F Rel", "A Atk", "A Dec", "A Sus", "A Rel",
+                   "FiltType", "KeyTrk", "PWM", "Sync", "Unison", "Vel>Filt", "Vel>Amp", "Vibrato"),
+            listOf(.02f, .45f, .3f, .4f, .02f, .5f, .8f, .4f, .3f, .5f, 0f, 0f, 0f, .3f, .5f, 0f)),
     )
     /** order + group names for the machine picker */
-    val pickerOrder = listOf(0, 1, 2, 3, 4, 5, 14, 15, 16, 20, 6, 7, 8, 13, 21, 9, 11, 10, 12, 17, 18, 19)
+    val pickerOrder = listOf(0, 1, 2, 3, 4, 5, 14, 15, 16, 20, 6, 7, 8, 13, 21, 9, 11, 10, 23, 12, 22, 17, 18, 19)
     fun group(m: Int) = when (m) {
         in 0..5 -> "Classic drum"; 14, 15, 16 -> "Unusual drum"; 6, 7, 8, 13, 21 -> "Physical model"
         9, 11, 20 -> "Sample"; else -> "Synth"
@@ -154,11 +167,22 @@ object Defs {
     private val noteNames = listOf("C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B")
     fun noteName(n: Int) = noteNames[((n % 12) + 12) % 12] + (n / 12 - 1)
 
-    fun paramName(machine: Int, i: Int): String =
-        if (i >= 16) "" else if (i >= 12) trackParams[i - 12] else machines[machine].params.getOrElse(i) { "" }
-
-    fun paramDefault(machine: Int, i: Int): Float =
-        if (i >= 16) .5f else if (i >= 12) trackDefaults[i - 12] else machines[machine].defaults.getOrElse(i) { 0.5f }
+    fun paramName(machine: Int, i: Int): String = when {
+        i in 24..39 -> machines[machine].params2.getOrElse(i - 24) { "" }
+        i >= 16 -> ""
+        i >= 12 -> trackParams[i - 12]
+        else -> machines[machine].params.getOrElse(i) { "" }
+    }
+    fun paramDefault(machine: Int, i: Int): Float = when {
+        i in 24..39 -> machines[machine].defaults2.getOrElse(i - 24) { .5f }
+        i >= 16 -> .5f
+        i >= 12 -> trackDefaults[i - 12]
+        else -> machines[machine].defaults.getOrElse(i) { 0.5f }
+    }
+    val fm4Algos = listOf("1 Stack", "2 Y-branch", "3 Dual mod", "4 Two stacks", "5 One→three", "6 Pair+2", "7 Stack+1", "8 Additive")
+    val fm4Ratios = listOf("0.5", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "14", "16")
+    private fun waveName(v: Float): String { val seg = v * 3f; val n = listOf("Saw", "Sq", "Tri", "Sin"); val i = seg.toInt().coerceIn(0, 3); val f = seg - i
+        return if (f < .08f || i == 3) n[i] else if (f > .92f) n[i + 1] else "${n[i]}>${n[i + 1]}" }
 
     fun formatParam(machine: Int, i: Int, v: Float): String {
         val name = paramName(machine, i)
@@ -170,6 +194,16 @@ object Defs {
             (machine == 9 || machine == 20) && i == 5 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Off" else if (p < 0) "LP${-p}" else "HP$p" }
             (machine == 9 || machine == 20) && i == 3 -> if (v >= .99f) "Hold" else (v * 100).roundToInt().toString()
             name == "Ratio" && machine == 4 -> String.format("%.2f", .5f + v * 7.5f)
+            machine == 22 && i == 0 -> fm4Algos[(v * 7.99f).toInt().coerceIn(0, 7)]
+            machine == 22 && i in 2..9 && i % 2 == 0 -> fm4Ratios[(v * 14.99f).toInt().coerceIn(0, 14)]
+            machine == 22 && i == 36 -> if (v >= .99f) "Off" else (v * 100).roundToInt().toString()
+            machine == 23 && (i == 0 || i == 1) -> waveName(v)
+            machine == 23 && i == 2 -> { val st = ((v - .5f) * 48f).roundToInt(); if (st > 0) "+$st" else "$st" }
+            machine == 23 && i == 3 -> { val c = ((v - .5f) * 100f).roundToInt(); if (c > 0) "+${c}c" else "${c}c" }
+            machine == 23 && i == 9 -> { val p = ((v - .5f) * 200f).roundToInt(); if (p > 0) "+$p" else "$p" }
+            machine == 23 && i == 32 -> listOf("LP12", "LP24", "BP", "HP")[(v * 3.99f).toInt().coerceIn(0, 3)]
+            machine == 23 && i == 35 -> if (v > .5f) "On" else "Off"
+            machine == 23 && i == 36 -> "${1 + (v * 2.99f).toInt().coerceIn(0, 2)}x"
             machine == 11 && i == 4 -> { val st = ((v - .5f) * 48).roundToInt(); if (st > 0) "+$st" else "$st" }
             machine == 11 && i == 8 -> { val p = ((v - .5f) * 200).roundToInt(); if (p == 0) "Stop" else if (p < 0) "<$p" else ">$p" }
             machine == 12 && i == 0 -> fmRatios[(v * 11.99f).toInt().coerceIn(0, 11)]
@@ -236,6 +270,7 @@ class TrackData {
     fun setMachineDefaults(m: Int) {
         machine = m
         for (i in 0 until 12) params[i] = Defs.paramDefault(m, i)
+        for (i in 24 until 40) params[i] = Defs.paramDefault(m, i)
     }
 }
 
@@ -266,7 +301,7 @@ class Project {
     }
     /** name of a track parameter, including the insert slots (16..23) */
     fun paramName(t: Int, i: Int): String {
-        if (i < 16) return Defs.paramName(tracks[t].machine, i)
+        if (i < 16 || i >= 24) return Defs.paramName(tracks[t].machine, i)
         val slot = (i - 16) / 4; val j = (i - 16) % 4
         val ty = tracks[t].insType[slot]
         if (ty <= 0) return ""
@@ -274,12 +309,12 @@ class Project {
         return if (j == 3) "$ab Mix" else Defs.inserts[ty].params.getOrNull(j)?.let { "$ab $it" } ?: ""
     }
     fun paramDefault(t: Int, i: Int): Float {
-        if (i < 16) return Defs.paramDefault(tracks[t].machine, i)
+        if (i < 16 || i >= 24) return Defs.paramDefault(tracks[t].machine, i)
         val slot = (i - 16) / 4; val j = (i - 16) % 4
         return if (j == 3) 1f else Defs.inserts[tracks[t].insType[slot]].defaults.getOrElse(j) { .5f }
     }
     fun formatParam(t: Int, i: Int, v: Float): String {
-        if (i < 16) return Defs.formatParam(tracks[t].machine, i, v)
+        if (i < 16 || i >= 24) return Defs.formatParam(tracks[t].machine, i, v)
         val slot = (i - 16) / 4; val j = (i - 16) % 4
         return Defs.formatInsert(tracks[t].insType[slot], j, v)
     }

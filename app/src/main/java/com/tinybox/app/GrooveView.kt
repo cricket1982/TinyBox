@@ -65,7 +65,8 @@ class GrooveView(private val app: MainActivity) : View(app) {
     private val topBtns = ArrayList<Pair<String, RectF>>()
     private val trackRows = Array(TRACKS + 1) { RectF() }
     private val pageBtns = Array(8) { RectF() }
-    private val resBtn = RectF(); private val tabSound = RectF(); private val tabIns = RectF()
+    private val resBtn = RectF(); private val tabSound = RectF(); private val tabIns = RectF(); private val tabSound2 = RectF()
+    private val smpPrev = RectF(); private val smpNext = RectF(); private val grainPrev = RectF(); private val grainNext = RectF()
     var knobTab = 0   // 0 = sound knobs, 1 = insert effects
     private val lenMinus = RectF(); private val lenPlus = RectF(); private val lenBox = RectF()
     private val stepCells = Array(16) { RectF() }
@@ -115,7 +116,8 @@ class GrooveView(private val app: MainActivity) : View(app) {
         lenPlus.set(lenBox.right + .5f * u, 9.5f * u, lenBox.right + 5f * u, 13.5f * u)
         resBtn.set(lenPlus.right + 1.5f * u, 9.5f * u, lenPlus.right + 13f * u, 13.5f * u)
         tabIns.set(x1 - 11f * u, 9.5f * u, x1, 13.5f * u)
-        tabSound.set(tabIns.left - 11.5f * u, 9.5f * u, tabIns.left - .5f * u, 13.5f * u)
+        tabSound2.set(tabIns.left - 11.5f * u, 9.5f * u, tabIns.left - .5f * u, 13.5f * u)
+        tabSound.set(tabSound2.left - 11.5f * u, 9.5f * u, tabSound2.left - .5f * u, 13.5f * u)
         val cw = (x1 - x0) / 16f
         for (i in 0 until 16) {
             val gap = if (i % 4 == 3) .9f * u else .35f * u
@@ -139,7 +141,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
         octUp.set(x0, perf.centerY() + .4f * u, x0 + 8f * u, perf.bottom)
         keysRect.set(x0 + 9f * u, perf.top, x1, perf.bottom)
         slicerBtns.clear()
-        val sl = listOf("LOAD", "DETECT", "SENS-", "SENS+", "EDIT", "ZOOM-", "ZOOM+")
+        val sl = listOf("LOAD", "PREV", "NEXT", "DETECT", "SENS-", "SENS+", "EDIT", "ZOOM-", "ZOOM+")
         val bw = 8.5f * u
         for ((i, id) in sl.withIndex()) slicerBtns.add(id to RectF(x0 + i * (bw + .6f * u), perf.top, x0 + i * (bw + .6f * u) + bw, perf.top + 5f * u))
         waveRect.set(x0, perf.top + 6f * u, x1, perf.bottom)
@@ -188,8 +190,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
             for (j in 0 until 4) mfxKnobs[k][j].set(l, (22.5f + j * 19f) * u, r, (40.5f + j * 19f) * u)
         }
         // sampler (one-shot) on the PADS page: load + waveform on top, pads below
-        smpLoad.set(x0, 9.5f * u, x0 + 9f * u, 14f * u)
-        smpWave.set(x0 + 10f * u, 9.5f * u, x1, 28f * u)
+        smpLoad.set(x0, 9.5f * u, x0 + 10f * u, 15f * u)
+        smpPrev.set(x0, 16f * u, x0 + 4.7f * u, 22f * u); smpNext.set(x0 + 5.3f * u, 16f * u, x0 + 10f * u, 22f * u)
+        smpWave.set(x0 + 11f * u, 9.5f * u, x1, 28f * u)
         run {
             val bw4 = (x1 - x0) / 4f; val bh4 = (h - u - 29.5f * u) / 2f
             for (t in 0 until TRACKS) { val c = t % 4; val r = t / 4
@@ -216,8 +219,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
             pagePads[i].set(x0 + 10f * u + c * spw + .4f * u, 39.5f * u + r * sph + .4f * u, x0 + 10f * u + (c + 1) * spw - .4f * u, 39.5f * u + (r + 1) * sph - .4f * u)
         }
         // granular page
-        grainLoad.set(x0, 9.5f * u, x0 + 9f * u, 14f * u)
-        grainWave.set(x0 + 10f * u, 9.5f * u, x1, 32f * u)
+        grainLoad.set(x0, 9.5f * u, x0 + 10f * u, 15f * u)
+        grainPrev.set(x0, 16f * u, x0 + 4.7f * u, 22f * u); grainNext.set(x0 + 5.3f * u, 16f * u, x0 + 10f * u, 22f * u)
+        grainWave.set(x0 + 11f * u, 9.5f * u, x1, 32f * u)
         grainOctDown.set(x0, 33.5f * u, x0 + 9f * u, 33.5f * u + (h - u - 33.5f * u) / 2f - .4f * u)
         grainOctUp.set(x0, grainOctDown.bottom + .8f * u, x0 + 9f * u, h - u)
         grainKeys.set(x0 + 10f * u, 33.5f * u, x1, h - u)
@@ -406,6 +410,8 @@ class GrooveView(private val app: MainActivity) : View(app) {
         }
         drawBtn(c, resBtn, "RES ${Defs.resNames[pat.res[selTrack]]}", pat.res[selTrack] > 0, onCol = 0xFF5AA9FF.toInt(), ts = 1.9f)
         drawBtn(c, tabSound, "SOUND", knobTab == 0, onCol = 0xFFDADDE3.toInt(), ts = 1.9f)
+        val has2 = def.params2.isNotEmpty()
+        drawBtn(c, tabSound2, "SOUND 2", knobTab == 2, if (has2) panel2 else panel, onCol = 0xFFDADDE3.toInt(), ts = 1.9f)
         drawBtn(c, tabIns, if (tr.insType.any { it > 0 }) "INSERT ●" else "INSERT", knobTab == 1, onCol = 0xFFDADDE3.toInt(), ts = 1.9f)
         drawBtn(c, lenMinus, "−", ts = 2.4f)
         drawBtn(c, lenPlus, "+", ts = 2.4f)
@@ -550,13 +556,15 @@ class GrooveView(private val app: MainActivity) : View(app) {
             c.drawText("Inserts run before the mixer, in order A → B", soundKnobs[6].right, soundKnobs[14].centerY(), text)
             return
         }
-        for (i in 0 until 16) {
+        if (knobTab == 2 && def.params2.isEmpty()) knobTab = 0
+        for (cell in 0 until 16) {
+            val i = if (knobTab == 2) 24 + cell else cell
             val name = proj.paramName(selTrack, i)
             if (name.isEmpty()) continue
             val locked = s != null && s.lock[i] >= 0f
             val v = if (locked) s!!.lock[i] else tr.params[i]
-            val col = if (i >= 12) 0xFF8A93A6.toInt() else trackCol[selTrack]
-            drawKnob(c, soundKnobs[i], name, v, proj.formatParam(selTrack, i, v), col, true, locked)
+            val col = if (i in 12..15) 0xFF8A93A6.toInt() else trackCol[selTrack]
+            drawKnob(c, soundKnobs[cell], name, v, proj.formatParam(selTrack, i, v), col, true, locked)
         }
     }
     private fun insTypeRect(slot: Int): RectF {
@@ -566,6 +574,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
     /** knob cell -> track param index for the current knob tab, or -1 */
     private fun knobParam(cell: Int): Int {
         if (knobTab == 0) return if (proj.paramName(selTrack, cell).isEmpty()) -1 else cell
+        if (knobTab == 2) { val i = 24 + cell; return if (proj.paramName(selTrack, i).isEmpty()) -1 else i }
         val slot = cell / 8; val j = cell % 8 - 1
         if (j !in 0..3) return -1
         val i = 16 + slot * 4 + j
@@ -596,7 +605,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
         }
         if (def.kind == Kind.SLICER && !onPadsPage()) { drawSlicePads(c); return }
         if (def.kind == Kind.GRAIN) {
-            drawBtn(c, grainLoad, "LOAD", ts = 2f)
+            drawBtn(c, grainLoad, "BROWSE", ts = 2f); drawBtn(c, grainPrev, "◀", ts = 2.4f); drawBtn(c, grainNext, "▶", ts = 2.4f)
             drawBtn(c, grainOctDown, "OCT −", ts = 2f)
             drawBtn(c, grainOctUp, "OCT +", ts = 2f)
             fill.color = panel; c.drawRoundRect(grainWave, u, u, fill)
@@ -631,6 +640,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
             "SENS+" -> drawBtn(c, r, "SENS +", ts = 2f)
             "ZOOM-" -> drawBtn(c, r, "ZOOM −", ts = 2f)
             "ZOOM+" -> drawBtn(c, r, "ZOOM +", ts = 2f)
+            "LOAD" -> drawBtn(c, r, "BROWSE", ts = 2f)
+            "PREV" -> drawBtn(c, r, "◀", ts = 2.4f)
+            "NEXT" -> drawBtn(c, r, "▶", ts = 2.4f)
             else -> drawBtn(c, r, id, ts = 2f)
         }
         text.textAlign = Paint.Align.LEFT; text.textSize = 2f * u; text.color = subText
@@ -683,7 +695,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
     }
 
     private fun drawSamplerHeader(c: Canvas) {
-        drawBtn(c, smpLoad, "LOAD", ts = 2f)
+        drawBtn(c, smpLoad, "BROWSE", ts = 2f); drawBtn(c, smpPrev, "◀", ts = 2.4f); drawBtn(c, smpNext, "▶", ts = 2.4f)
         fill.color = panel; c.drawRoundRect(smpWave, u, u, fill)
         val d = app.decoded[selTrack]
         if (d == null) {
@@ -972,6 +984,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
         if (resBtn.contains(x, y)) return Target.Btn("RES")
         if (tabSound.contains(x, y)) return Target.Btn("TABSOUND")
         if (tabIns.contains(x, y)) return Target.Btn("TABINS")
+        if (tabSound2.contains(x, y)) return Target.Btn("TABSOUND2")
         if (lenMinus.contains(x, y)) return Target.Btn("LEN-")
         if (lenPlus.contains(x, y)) return Target.Btn("LEN+")
         for (i in 0 until 16) if (stepCells[i].contains(x, y)) return Target.StepCell(i)
@@ -991,7 +1004,11 @@ class GrooveView(private val app: MainActivity) : View(app) {
     }
 
     private fun hitPerf(x: Float, y: Float): Target? {
-        if (onPadsPage() && oneShotSel() && smpLoad.contains(x, y)) return Target.Btn("SLLOAD")
+        if (onPadsPage() && oneShotSel()) {
+            if (smpLoad.contains(x, y)) return Target.Btn("SLLOAD")
+            if (smpPrev.contains(x, y)) return Target.Btn("SLPREV")
+            if (smpNext.contains(x, y)) return Target.Btn("SLNEXT")
+        }
         if (showMaster || def.kind == Kind.DRUM) { for (t in 0 until TRACKS) if (padRect(t).contains(x, y)) return Target.Pad(t); return null }
         if (def.kind == Kind.SYNTH || (def.kind == Kind.GRAIN && !onPadsPage())) {
             if (octDownR().contains(x, y)) return Target.Btn("OCT-")
@@ -1001,6 +1018,8 @@ class GrooveView(private val app: MainActivity) : View(app) {
         }
         if (def.kind == Kind.GRAIN) {
             if (grainLoad.contains(x, y)) return Target.Btn("SLLOAD")
+            if (grainPrev.contains(x, y)) return Target.Btn("SLPREV")
+            if (grainNext.contains(x, y)) return Target.Btn("SLNEXT")
             if (grainOctDown.contains(x, y)) return Target.Btn("OCT-")
             if (grainOctUp.contains(x, y)) return Target.Btn("OCT+")
             if (grainWave.contains(x, y)) return Target.Knob(0)
@@ -1428,6 +1447,7 @@ class GrooveView(private val app: MainActivity) : View(app) {
             id == "RES" -> changeRes(selTrack, (pat.res[selTrack] + 1) % 3)
             id == "TABSOUND" -> knobTab = 0
             id == "TABINS" -> knobTab = 1
+            id == "TABSOUND2" -> if (def.params2.isNotEmpty()) knobTab = 2 else app.toast("${def.name} has no second page")
             id.startsWith("INS") && id.length == 4 -> { val slot = id[3] - '0'; app.chooseInsert(selTrack, slot) { invalidate() } }
             id == "MIX" -> pageMode = 1
             id == "SONG" -> pageMode = 2
@@ -1463,7 +1483,9 @@ class GrooveView(private val app: MainActivity) : View(app) {
             id == "DONE" -> editStep = -1
             id == "OCT-" -> octave = (octave - 1).coerceAtLeast(0)
             id == "OCT+" -> octave = (octave + 1).coerceAtMost(7)
-            id == "SLLOAD" -> app.pickSample(selTrack)
+            id == "SLLOAD" -> app.browse(selTrack)
+            id == "SLPREV" -> app.nextSample(selTrack, -1)
+            id == "SLNEXT" -> app.nextSample(selTrack, 1)
             id == "SLDETECT" -> app.setAutoSlices(selTrack)
             id == "SLSENS-" -> { tr.sliceSens = (tr.sliceSens - .1f).coerceIn(0f, 1f); app.setAutoSlices(selTrack) }
             id == "SLSENS+" -> { tr.sliceSens = (tr.sliceSens + .1f).coerceIn(0f, 1f); app.setAutoSlices(selTrack) }

@@ -7,7 +7,7 @@
 
 constexpr int kTracks = 8;
 constexpr int kMaxSteps = 128;
-constexpr int kDestStride = 32;   // LFO destination = track * 32 + param
+constexpr int kDestStride = 64;   // LFO destination = track * 64 + param
 constexpr int kPatterns = 8;
 constexpr int kMasterParams = 40;   // 0..12 master, 16..31 master FX slots (4 x 4)
 enum { TP_LEVEL = 12, TP_PAN = 13, TP_DLY = 14, TP_REV = 15 };

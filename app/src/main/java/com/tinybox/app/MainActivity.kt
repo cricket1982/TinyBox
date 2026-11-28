@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
+import android.provider.DocumentsContract
 import android.os.Looper
 import android.text.InputType
 import android.view.View
@@ -69,7 +70,7 @@ class MainActivity : Activity() {
     fun latencySteps(): Double = 0.040 * project.bpm / 60.0 * 4.0
 
     // ---- recording settings (kept between sessions)
-    private val prefs by lazy { getSharedPreferences("tinybox", MODE_PRIVATE) }
+    val prefs by lazy { getSharedPreferences("tinybox", MODE_PRIVATE) }
     var recQuant: Float
         get() = prefs.getFloat("recQuant", 0f)
         set(v) { prefs.edit().putFloat("recQuant", v).apply() }
@@ -249,15 +250,99 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode != 4242 || resultCode != RESULT_OK) return
+        if (resultCode != RESULT_OK) return
         val uri = data?.data ?: return
         try { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) } catch (_: Exception) {}
         val t = pendingSampleTrack.takeIf { it in 0 until TRACKS } ?: return
-        loadSampleAsync(t, uri, keepSlices = false)
+        if (requestCode == 4242) { trackBrowse[t] = null; loadSampleAsync(t, uri, keepSlices = false, audition = true) }
+        if (requestCode == 4343) {
+            prefs.edit().putString("sampleTree", uri.toString()).apply()
+            browseStack.clear()
+            browse(t)
+        }
     }
 
-    private fun loadSampleAsync(t: Int, uri: Uri, keepSlices: Boolean) {
-        if (!keepSlices) toast("Loading sample…")
+    // ------------------------------------------------------------ sample folder browser
+    class Entry(val name: String, val docId: String, val isDir: Boolean)
+    private val audioExt = setOf("wav", "wave", "aif", "aiff", "mp3", "flac", "ogg", "m4a", "aac", "opus")
+    private val browseStack = ArrayList<String>()           // doc ids from the root folder down to the current one
+    private val trackBrowse = arrayOfNulls<Pair<List<Entry>, Int>>(TRACKS)   // files of the folder a sample came from + position
+    private fun tree(): Uri? = prefs.getString("sampleTree", null)?.let { Uri.parse(it) }
+
+    fun pickFolder(t: Int) {
+        pendingSampleTrack = t
+        @Suppress("DEPRECATION")
+        startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), 4343)
+    }
+
+    private fun listDir(tree: Uri, docId: String): List<Entry> {
+        val out = ArrayList<Entry>()
+        try {
+            val kids = DocumentsContract.buildChildDocumentsUriUsingTree(tree, docId)
+            contentResolver.query(kids, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_DISPLAY_NAME, DocumentsContract.Document.COLUMN_MIME_TYPE), null, null, null)?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0) ?: continue; val name = c.getString(1) ?: continue; val mime = c.getString(2) ?: ""
+                    if (name.startsWith(".")) continue
+                    val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                    if (isDir || mime.startsWith("audio/") || name.substringAfterLast('.', "").lowercase() in audioExt) out.add(Entry(name, id, isDir))
+                }
+            }
+        } catch (_: Exception) {}
+        return out.sortedWith(compareBy<Entry>({ !it.isDir }, { it.name.lowercase() }))
+    }
+
+    /** list the current folder; tap a folder to open it, a sample to load (and hear) it */
+    fun browse(t: Int) {
+        val tr = tree() ?: run { toast("Choose your samples folder"); pickFolder(t); return }
+        if (browseStack.isEmpty()) browseStack.add(try { DocumentsContract.getTreeDocumentId(tr) } catch (_: Exception) { prefs.edit().remove("sampleTree").apply(); pickFolder(t); return })
+        val dirId = browseStack.last()
+        thread {
+            val entries = listDir(tr, dirId)
+            ui.post {
+                val files = entries.filter { !it.isDir }
+                val items = ArrayList<String>()
+                if (browseStack.size > 1) items.add("⬆  ..")
+                entries.forEach { items.add(if (it.isDir) "📁  ${it.name}" else "♪  ${it.name}") }
+                if (entries.isEmpty()) items.add("(no audio files here)")
+                AlertDialog.Builder(this).setTitle(if (browseStack.size > 1) "Samples  ›  folder ${browseStack.size - 1}" else "Samples")
+                    .setItems(items.toTypedArray()) { _, w ->
+                        var i = w
+                        if (browseStack.size > 1) { if (i == 0) { browseStack.removeAt(browseStack.size - 1); browse(t); return@setItems }; i-- }
+                        val e = entries.getOrNull(i) ?: return@setItems
+                        if (e.isDir) { browseStack.add(e.docId); browse(t) }
+                        else {
+                            trackBrowse[t] = files to files.indexOf(e)
+                            loadSampleAsync(t, DocumentsContract.buildDocumentUriUsingTree(tr, e.docId), keepSlices = false, audition = true)
+                        }
+                    }
+                    .setNeutralButton("Change folder…") { _, _ -> pickFolder(t) }
+                    .setNegativeButton("Single file…") { _, _ -> pickSample(t) }
+                    .show()
+            }
+        }
+    }
+
+    /** step to the previous / next sample in the folder the current one came from */
+    fun nextSample(t: Int, dir: Int) {
+        val tr = tree()
+        val tb = trackBrowse[t]
+        if (tr == null || tb == null || tb.first.isEmpty()) { browse(t); return }
+        val n = tb.first.size
+        val idx = ((tb.second + dir) % n + n) % n
+        trackBrowse[t] = tb.first to idx
+        loadSampleAsync(t, DocumentsContract.buildDocumentUriUsingTree(tr, tb.first[idx].docId), keepSlices = false, audition = true)
+    }
+
+    private fun audition(t: Int) {
+        val m = project.tracks[t].machine
+        val note = when (m) { 9 -> 0; else -> 60 }
+        Native.noteOn(t, note, .9f)
+        ui.postDelayed({ Native.noteOff(t, note) }, if (m == 11) 1200L else 700L)
+    }
+
+    private fun loadSampleAsync(t: Int, uri: Uri, keepSlices: Boolean, audition: Boolean = false) {
+        if (!keepSlices && !audition) toast("Loading sample…")
         thread {
             val d = AudioLoader.load(this, uri)
             ui.post {
@@ -270,6 +355,7 @@ class MainActivity : Activity() {
                 Native.loadSample(t, d.l, d.r, d.sampleRate.toFloat())
                 Native.setSlices(t, tr.slices)
                 view.invalidate()
+                if (audition) ui.postDelayed({ audition(t) }, 60)
             }
         }
     }
